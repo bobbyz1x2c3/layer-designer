@@ -78,7 +78,52 @@ This anchor must be included in **all subsequent generation prompts** (Phase 3~8
 
 ---
 
-## Step 5: Produce `layer_plan.json`
+## Step 5: Visual Opacity Judgment
+
+For each layer, the agent must visually judge whether it should be **semi-transparent** when stacked over other layers. Add an `opacity` field directly to each layer entry in `layer_plan.json`:
+
+| Opacity | Visual Type | Examples |
+|---------|-------------|----------|
+| `1.0` | Fully opaque | Solid backgrounds, characters, icons, text labels |
+| `0.75–0.9` | Slightly translucent | Frosted glass panels, card backgrounds with blur |
+| `0.5–0.7` | Moderately transparent | Floating overlays, HUD elements, modal backdrops |
+| `0.2–0.4` | Highly transparent | Glow effects, particle layers, vignettes |
+
+**How to judge**:
+- Use the agent's visual understanding on the confirmed preview
+- A glass panel that shows underlying content underneath → translucent
+- A solid button or icon with no visible background bleed → opaque
+- A glow or shadow effect → highly transparent
+
+**Example `layer_plan.json` with opacity**:
+```json
+{
+  "project": "my-dashboard",
+  "dimensions": {"width": 1920, "height": 1080},
+  "style_anchor": "Flat design, primary blue #3B82F6...",
+  "layers": [
+    {
+      "name": "background",
+      "contents": "Solid dark navy fill with subtle gradient texture",
+      "opacity": 1.0,
+      "layout": {"x": 0, "y": 0, "width": 1920, "height": 1080}
+    },
+    {
+      "name": "sidebar",
+      "contents": "Left navigation bar with icons and labels",
+      "opacity": 0.9,
+      "layout": {"x": 0, "y": 80, "width": 240, "height": 1000}
+    }
+  ],
+  "stacking_order": ["background", "sidebar"]
+}
+```
+
+The `opacity` field flows through the entire pipeline: Phase 3 generation prompts → Phase 4 preview → Figma import.
+
+---
+
+## Step 6: Produce `layer_plan.json`
 
 Save via `PathManager.get_layer_plan_path()`:
 

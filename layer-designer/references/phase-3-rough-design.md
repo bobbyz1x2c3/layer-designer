@@ -46,13 +46,19 @@ For each layer identified in `layer_plan.json`, in the documented stacking order
    - This returns a **compliant canvas size matching the layer's aspect ratio**, maximizing area within model constraints
    - For **background layer**: use the full canvas `early_size` from `size_plan.json` (already validated in Phase 1)
    - **NEVER construct a size string manually** (e.g., `f"{w}x{h}"`) without going through `compute_layer_size()` or `validate_size.py` first
-4. Generate isolated layer:
+4. Build the layer prompt:
+   - Base: `Extract ONLY the {layer_name}. {description}.`
+   - **If `opacity` < 1.0 (semi-transparent layer in the full design)**: append color purity guidance:
+     > "This element sits on top of a background in the full design. When extracting it, preserve the element's own intrinsic colors and texture cleanly — do NOT blend background colors into the element. The element should retain its intended solid appearance with pure, unmixed colors."
+   - Always append: `Transparent background, PNG with alpha channel, only this element isolated. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fill the entire canvas. The element should occupy the maximum possible area while preserving its exact original proportions.`
+
+5. Generate isolated layer:
 
 ```bash
 python scripts/generate_image.py edit \
   --config config.json \
   --image {confirmed_preview_path} \
-  --prompt "Extract ONLY the {layer_name}. {description}. Transparent background, PNG with alpha channel, only this element isolated. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fill the entire canvas. The element should occupy the maximum possible area while preserving its exact original proportions." \
+  --prompt "{layer_prompt}" \
   --output {layer_path} --size {layer_w}x{layer_h} --quality {tier}
 ```
 

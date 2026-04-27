@@ -180,6 +180,7 @@ def generate_enhanced_plan(
             "status": layer_info.get("status", "active"),
             "layout": scaled_layout,
             "source": rel_path,
+            "opacity": layer_info.get("opacity", 1.0),
         })
 
     enhanced_plan = {

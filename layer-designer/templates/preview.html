@@ -367,6 +367,7 @@
         el.style.width = (l.width || 100) + 'px';
         el.style.height = (l.height || 100) + 'px';
         el.style.zIndex = orderMap[layer.name] || idx;
+        if (layer.opacity !== undefined) el.style.opacity = layer.opacity;
 
         const img = document.createElement('img');
         img.src = layer.source || '';

@@ -137,6 +137,7 @@ async function importLayers(plan, images) {
       rect.x = layer.layout.x;
       rect.y = layer.layout.y;
       rect.resize(layer.layout.width, layer.layout.height);
+      rect.opacity = layer.opacity !== undefined ? layer.opacity : 1;
       // Store original id so export can recover it even if name is localized
       if (layer.id) {
         rect.setPluginData('layerId', layer.id);
@@ -279,6 +280,7 @@ async function exportLayerPlan(refPlan) {
       content: (ref && ref.content) || (ref && ref.description) || '',
       status: (ref && ref.status) || 'active',
       layout: layout,
+      opacity: child.opacity !== undefined ? child.opacity : 1,
     };
 
     if (ref) {

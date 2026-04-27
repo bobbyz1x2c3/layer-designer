@@ -100,7 +100,7 @@ Script: `scripts/validate_size.py` (`--config`, `--project`, `--width`, `--heigh
 │     Collect requirements, validate size, generate preview    │
 ├─────────────────────────────────────────────────────────────┤
 │                    PHASE 2: CONFIRMATION                     │
-│   Layer breakdown plan + layout extraction + style anchor    │
+│ Layer breakdown + layout + style anchor + opacity judgment   │
 ├─────────────────────────────────────────────────────────────┤
 │                    PHASE 3: ROUGH DESIGN                     │
 │    Generate isolated layers (early_size) + HTML preview      │
@@ -185,7 +185,7 @@ Script: `scripts/validate_size.py` (`--config`, `--project`, `--width`, `--heigh
 | Phase | Document | Script Invoked |
 |-------|----------|----------------|
 | 1 — Requirements | [`references/phase-1-requirements.md`](references/phase-1-requirements.md) | `validate_size.py`, `generate_image.py` |
-| 2 — Confirmation | [`references/phase-2-confirmation.md`](references/phase-2-confirmation.md) | (analysis + write `layer_plan.json` with layout) |
+| 2 — Confirmation | [`references/phase-2-confirmation.md`](references/phase-2-confirmation.md) | (analysis + write `layer_plan.json` with layout + opacity) |
 | 3 — Rough Design | [`references/phase-3-rough-design.md`](references/phase-3-rough-design.md) | `generate_image.py edit` |
 | 4 — Web Composition Check | [`references/phase-4-check.md`](references/phase-4-check.md) | `check_transparency.py`, `generate_preview.py` |
 | 5 — Refinement Preview | [`references/phase-5-refinement-preview.md`](references/phase-5-refinement-preview.md) | `generate_image.py edit` |
