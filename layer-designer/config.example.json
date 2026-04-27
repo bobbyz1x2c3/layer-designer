@@ -1,0 +1,116 @@
+{
+  "_comment": "Layered Design Generator configuration. Copy this file to config.json and fill in your API key. Environment variables like ${OPENAI_API_KEY} are resolved at runtime. Provider can be 'openai' (default) or 'apimart'.",
+  "download_mirror": "",
+  "api": {
+    "provider": "openai",
+    "openai": {
+      "provider_type": "openai",
+      "base_url": "http://your-endpoint-ip:8081/v1",
+      "api_key": "${OPENAI_API_KEY}",
+      "model": "gpt-image-2",
+      "default_size": "1024x1024",
+      "default_quality_low": "low",
+      "default_quality_medium": "medium",
+      "default_quality_high": "high",
+      "default_n": 1,
+      "output_format": "png"
+    },
+    "apimart": {
+      "provider_type": "async_task",
+      "base_url": "https://api.apimart.ai/v1",
+      "api_key": "${APIMART_API_KEY}",
+      "model": "gpt-image-2",
+      "default_size": "1024x1024",
+      "default_quality_low": "low",
+      "default_quality_medium": "medium",
+      "default_quality_high": "high",
+      "default_n": 1,
+      "output_format": "png",
+      "official_fallback": false,
+      "prefer_official": true,
+      "async_config": {
+        "submit_path": "/images/generations",
+        "poll_path_template": "/tasks/{task_id}",
+        "task_id_extractor": "data.0.task_id",
+        "status_extractor": "data.status",
+        "progress_extractor": "data.progress",
+        "image_urls_extractor": "data.result.images",
+        "url_field": "url",
+        "completed_status": "completed",
+        "failed_statuses": ["failed", "error"],
+        "initial_delay": 10,
+        "poll_interval": 5,
+        "timeout": 180
+      }
+    }
+  },
+  "model_constraints": {
+    "gpt-image-2": {
+      "max_edge": 3840,
+      "align": 16,
+      "max_ratio": 3.0,
+      "min_pixels": 655360,
+      "max_pixels": 8294400,
+      "supports_transparent_output": false
+    },
+    "gpt-image-1.5": {
+      "max_edge": 3840,
+      "align": 16,
+      "max_ratio": 3.0,
+      "min_pixels": 655360,
+      "max_pixels": 8294400,
+      "supports_transparent_output": true,
+      "notes": "Use with endpoints that support background=transparent for alpha PNG output"
+    }
+  },
+  "workflow": {
+    "max_iterations": 20,
+    "require_user_ok": true,
+    "default_scene": "ui-design",
+    "fast_workflow": true,
+    "preview_count_initial": 3,
+    "preview_count_revision": 2,
+    "preview_quality_initial": "low",
+    "preview_quality_revision": "low",
+    "parallel_generation": true,
+    "parallel_max_workers": 8,
+    "downsize_early_phases": true,
+    "downsize_ratio": 0.5,
+    "downsize_threshold_width": 300,
+    "downsize_threshold_height": 200,
+    "downsize_threshold_pixels": 60000,
+    "incremental_update": true,
+    "quality_adaptive": true
+  },
+  "paths": {
+    "output_root": "./output",
+    "layers_dir": "./layers",
+    "final_dir": "./final",
+    "check_dir": "./check",
+    "variants_dir": "./variants",
+    "states_dir": "./states",
+    "temp_dir": "./temp"
+  },
+  "transparency": {
+    "threshold": 10,
+    "sample_rate": 1.0,
+    "skip_check_if_no_alpha": true
+  },
+  "composition": {
+    "enforce_uniform_size": true,
+    "default_width": 1024,
+    "default_height": 1024
+  },
+  "variants": {
+    "default_control_type": "generic",
+    "default_states": ["hover", "active", "disabled"]
+  },
+  "matting": {
+    "model": "u2net",
+    "model_file": "",
+    "alpha_matting": true,
+    "alpha_matting_foreground_threshold": 240,
+    "alpha_matting_background_threshold": 10,
+    "alpha_matting_erode_size": 10
+  }
+}

@@ -1,0 +1,56 @@
+# ─────────────────────────────────────────
+# Layered Design Generator — .gitignore
+# ─────────────────────────────────────────
+
+# Sensitive config (contains API keys)
+config.json
+
+# Large model files (downloaded by setup script)
+*.onnx
+models/*.pth
+models/*.ckpt
+
+# Generated outputs
+output/
+
+# Test content (not part of core source)
+test-ref/
+test-extract/
+test_extract/
+
+# Runtime cache
+.codememory/
+cache/
+temp/
+*.tmp
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Agent-specific docs (not for repo)
+AGENTS.md
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+*.7z
+test/

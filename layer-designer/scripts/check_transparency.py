@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""
+Check if a PNG image has real transparent background or a solid-color background
+that should be treated as transparent (common with AI-generated images that output
+RGB mode with white/light fills instead of true alpha).
+
+Optionally remove the solid background via auto-matting and save as true RGBA PNG.
+
+Workflow phase where this script is invoked:
+- Phase 4 (Rough Design Check): run on every non-background layer to verify
+  real alpha transparency before compositing.
+
+Returns exit code 0 if transparent pixels exist (or solid background detected),
+1 if fully opaque or not PNG.
+Prints JSON with details to stdout.
+
+Usage:
+    # Check only
+    python check_transparency.py --config ../config.json --image input.png
+
+    # Check + auto-remove solid background if detected
+    python check_transparency.py --image input.png --remove-bg --output input_rgba.png
+"""
+
+import argparse
+import json
+import random
+import sys
+from pathlib import Path
+
+from config_loader import load_config, get_transparency_config, get_matting_config
+
+try:
+    from PIL import Image
+except ImportError:
+    print(json.dumps({"error": "Pillow not installed. Run: pip install Pillow"}), file=sys.stderr)
+    sys.exit(1)
+
+
+def _sample_pixels(img: Image.Image, count: int = 2000) -> list:
+    """Randomly sample pixel values from the image."""
+    width, height = img.size
+    pixels = img.load()
+    total = width * height
+    count = min(count, total)
+    if count <= total // 2:
+        coords = random.sample([(x, y) for x in range(width) for y in range(height)], count)
+    else:
+        coords = [(random.randrange(width), random.randrange(height)) for _ in range(count)]
+    return [pixels[x, y] for x, y in coords]
+
+
+def remove_background(image_path: str, output_path: str, matting_config: dict | None = None) -> dict:
+    """
+    Auto-matte: remove background using rembg (configurable deep-learning model).
+
+    The ONNX model is loaded from the skill's internal models/ directory
+    (relative to this script's location), not from the user's home directory.
+    Supported models depend on the installed rembg version; common choices:
+    "u2net", "birefnet-general", "birefnet-general-lite", "birefnet-portrait", etc.
+
+    Args:
+        image_path: Input image path
+        output_path: Output RGBA PNG path
+        matting_config: Optional matting configuration dict from get_matting_config()
+
+    Returns:
+        dict with success, transparent_pixels, output_path
+    """
+    import os
+    import numpy as np
+    from pathlib import Path
+
+    # Point rembg to the skill-internal models directory
+    script_dir = Path(__file__).parent.resolve()
+    model_dir = script_dir.parent / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["U2NET_HOME"] = str(model_dir)
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    cfg = matting_config or {}
+    model_name = cfg.get("model", "u2net")
+    model_file = cfg.get("model_file", "")
+    alpha_matting = cfg.get("alpha_matting", True)
+    fg_threshold = cfg.get("alpha_matting_foreground_threshold", 240)
+    bg_threshold = cfg.get("alpha_matting_background_threshold", 10)
+    erode_size = cfg.get("alpha_matting_erode_size", 10)
+
+    # If user specified a custom model_file, create a hard link so rembg can find it
+    expected_path = model_dir / f"{model_name}.onnx"
+    if model_file and not expected_path.exists():
+        custom_path = model_dir / model_file
+        if custom_path.exists():
+            try:
+                os.link(str(custom_path), str(expected_path))
+                print(f"[OK] Linked {model_file} -> {model_name}.onnx")
+            except Exception as e:
+                print(f"[WARNING] Could not link model file: {e}")
+        else:
+            print(f"[WARNING] Configured model_file not found: {custom_path}")
+
+    from rembg import remove, new_session
+    session = new_session(model_name)
+    img = Image.open(image_path)
+    result = remove(
+        img,
+        session=session,
+        alpha_matting=alpha_matting,
+        alpha_matting_foreground_threshold=fg_threshold,
+        alpha_matting_background_threshold=bg_threshold,
+        alpha_matting_erode_size=erode_size,
+    )
+    result.save(output_path)
+
+    alpha = np.array(result.getchannel("A"))
+    transparent_count = int(np.sum(alpha == 0))
+    method_name = f"rembg_{model_name}"
+    if alpha_matting:
+        method_name += "_alpha_matting"
+    return {
+        "success": True,
+        "method": method_name,
+        "transparent_pixels": transparent_count,
+        "output_path": output_path,
+    }
+
+
+def check_transparency(image_path: str, threshold: int = 10, sample_rate: float = 1.0):
+    """
+    Check if image has transparent pixels or a solid-color background.
+
+    Two detection strategies:
+    1. RGBA mode: random sample pixels, count alpha==0. If >= 2, transparent.
+    2. RGB/L/P mode (fallback): random sample pixels, detect if background is
+       a near-uniform light color (typical of AI-generated images without alpha).
+       If >50% of sampled pixels are nearly identical and light-colored,
+       treat as "has transparent background".
+
+    Args:
+        image_path: Path to image file
+        threshold: Legacy param (ignored); kept for CLI compat
+        sample_rate: Legacy param (ignored); kept for CLI compat
+
+    Returns:
+        dict with has_transparency, transparent_pixels, width, height, mode
+    """
+    path = Path(image_path)
+    if not path.exists():
+        return {"error": f"File not found: {image_path}", "has_transparency": False}
+
+    try:
+        img = Image.open(image_path)
+    except Exception as e:
+        return {"error": str(e), "has_transparency": False}
+
+    if img.format != "PNG":
+        return {
+            "error": f"Not a PNG file (format: {img.format})",
+            "has_transparency": False,
+            "format": img.format,
+        }
+
+    width, height = img.size
+    original_mode = img.mode
+
+    # ------------------------------------------------------------------
+    # Strategy 1: RGBA mode — check for alpha=0 pixels via random sampling
+    # ------------------------------------------------------------------
+    if img.mode == "RGBA":
+        pixels = img.load()
+        total = width * height
+        sample_count = min(2000, total)
+        transparent_count = 0
+        for _ in range(sample_count):
+            x = random.randrange(width)
+            y = random.randrange(height)
+            r, g, b, a = pixels[x, y]
+            if a == 0:
+                transparent_count += 1
+                if transparent_count >= 2:
+                    break
+
+        has_transparency = transparent_count >= 2
+        result = {
+            "has_transparency": has_transparency,
+            "transparent_pixels": transparent_count,
+            "sampled_pixels": sample_count,
+            "width": width,
+            "height": height,
+            "mode": original_mode,
+            "format": "PNG",
+            "detection_method": "alpha_sampling",
+        }
+        if not has_transparency:
+            result["recommend_matte"] = False
+            result["message"] = "Image is RGBA but has no fully transparent pixels (alpha==0). The API endpoint did not output a true transparent PNG."
+        return result
+
+    # ------------------------------------------------------------------
+    # Strategy 2: RGB/L/P mode — detect solid light background
+    # ------------------------------------------------------------------
+    sample_count = min(2000, width * height)
+    sampled = _sample_pixels(img, sample_count)
+
+    if img.mode == "L":
+        light_count = sum(1 for v in sampled if v > 240)
+        uniform_count = 0
+        if len(sampled) > 1:
+            avg = sum(sampled) / len(sampled)
+            uniform_count = sum(1 for v in sampled if abs(v - avg) < 10)
+        has_transparency = (light_count / len(sampled) > 0.5) or (uniform_count / len(sampled) > 0.6)
+        return {
+            "has_transparency": has_transparency,
+            "light_pixels": light_count,
+            "sampled_pixels": len(sampled),
+            "width": width,
+            "height": height,
+            "mode": original_mode,
+            "format": "PNG",
+            "detection_method": "solid_background_fallback",
+            "note": "Image is grayscale; detected solid light background as transparent",
+        }
+
+    if img.mode in ("RGB", "P"):
+        light_count = 0
+        uniform_count = 0
+        if sampled:
+            avg_r = sum(p[0] for p in sampled) / len(sampled)
+            avg_g = sum(p[1] for p in sampled) / len(sampled)
+            avg_b = sum(p[2] for p in sampled) / len(sampled)
+
+            for r, g, b in sampled:
+                if r > 200 and g > 200 and b > 200:
+                    light_count += 1
+                if (abs(r - avg_r) < 15 and abs(g - avg_g) < 15 and abs(b - avg_b) < 15):
+                    uniform_count += 1
+
+        light_ratio = light_count / len(sampled) if sampled else 0
+        uniform_ratio = uniform_count / len(sampled) if sampled else 0
+        has_transparency = light_ratio > 0.5 or uniform_ratio > 0.6
+
+        result = {
+            "has_transparency": has_transparency,
+            "light_pixels": light_count,
+            "uniform_pixels": uniform_count,
+            "sampled_pixels": len(sampled),
+            "light_ratio": round(light_ratio, 4),
+            "uniform_ratio": round(uniform_ratio, 4),
+            "width": width,
+            "height": height,
+            "mode": original_mode,
+            "format": "PNG",
+            "detection_method": "solid_background_fallback",
+            "note": "Image has no alpha channel; detected solid light background as transparent" if has_transparency else "No alpha and no uniform light background detected",
+        }
+        if not has_transparency:
+            result["recommend_matte"] = False
+            result["message"] = "Image has no alpha channel and no uniform light background detected. Cannot auto-remove background."
+        else:
+            # Solid background detected but no real alpha — recommend matte
+            result["recommend_matte"] = True
+            result["message"] = "Image has no real alpha channel, but a solid light-colored background was detected. Use --remove-bg to auto-remove it via U²Net model."
+        return result
+
+    return {
+        "has_transparency": False,
+        "error": f"Unsupported image mode: {img.mode}",
+        "width": width,
+        "height": height,
+        "mode": original_mode,
+        "format": "PNG",
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Check PNG transparency")
+    parser.add_argument("--config", help="Path to config.json")
+    parser.add_argument("--image", "-i", required=True, help="Input PNG image path")
+    parser.add_argument("--threshold", "-t", type=int, default=None,
+                        help="Alpha threshold (legacy, ignored)")
+    parser.add_argument("--sample-rate", "-s", type=float, default=None,
+                        help="Sampling rate (legacy, ignored)")
+    parser.add_argument("--remove-bg", action="store_true",
+                        help="Auto-remove solid background and save as RGBA PNG")
+    parser.add_argument("--output", "-o", help="Output path for --remove-bg result")
+    parser.add_argument("--tolerance", type=int, default=20,
+                        help="Background removal tolerance (0-255), default 20")
+    parser.add_argument("--auto-crop", action="store_true",
+                        help="After background removal, crop image to content bounding box (for extreme-ratio layers)")
+    parser.add_argument("--crop-padding", type=int, default=0,
+                        help="Padding in pixels when auto-cropping (default 0)")
+    args = parser.parse_args()
+
+    # Load config defaults
+    threshold = args.threshold
+    sample_rate = args.sample_rate
+    matting_cfg = {}
+    if args.config or (threshold is None or sample_rate is None):
+        try:
+            config = load_config(args.config)
+            cfg = get_transparency_config(config)
+            if threshold is None:
+                threshold = cfg.get("threshold", 10)
+            if sample_rate is None:
+                sample_rate = cfg.get("sample_rate", 1.0)
+            matting_cfg = get_matting_config(config)
+        except Exception:
+            if threshold is None:
+                threshold = 10
+            if sample_rate is None:
+                sample_rate = 1.0
+    else:
+        try:
+            matting_cfg = get_matting_config(load_config(args.config))
+        except Exception:
+            pass
+
+    # 1. Run transparency check
+    result = check_transparency(args.image, threshold=threshold, sample_rate=sample_rate)
+
+    # 2. Auto-remove background if requested
+    #    When --remove-bg is explicitly passed, always attempt rembg regardless of
+    #    detection result. This is an optional best-effort optimization, not a
+    #    mandatory requirement. Even if no solid background was detected, rembg
+    #    may still produce usable results on complex backgrounds.
+    if args.remove_bg:
+        output_path = args.output
+        if not output_path:
+            p = Path(args.image)
+            output_path = str(p.with_suffix("")) + "_rgba.png"
+
+        matte_result = remove_background(args.image, output_path, matting_cfg)
+        result["matte"] = matte_result
+        # Override has_transparency since we now have a matte output
+        if matte_result.get("transparent_pixels", 0) > 0:
+            result["has_transparency"] = True
+            result["detection_method"] = "rembg_forced"
+            result["note"] = "Background removed via forced rembg (best-effort)"
+
+        # Auto-crop to content bounding box if requested
+        if args.auto_crop and matte_result.get("success"):
+            crop_output = str(Path(output_path).with_suffix("")) + "_cropped.png"
+            try:
+                from crop_to_content import crop_to_content
+                crop_result = crop_to_content(output_path, crop_output, padding=args.crop_padding)
+                result["crop"] = crop_result
+                if crop_result.get("success"):
+                    result["note"] += "; auto-cropped to content bounding box"
+            except Exception as e:
+                result["crop_error"] = str(e)
+
+    print(json.dumps(result, indent=2))
+
+    if result.get("error") and not result.get("has_transparency"):
+        sys.exit(1)
+    sys.exit(0 if result["has_transparency"] else 1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Layer Designer — Interactive Preview</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #e2e8f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px;
+      min-height: 100vh;
+    }
+    h1 { font-size: 18px; font-weight: 600; margin-bottom: 6px; color: #f8fafc; }
+    .subtitle { font-size: 12px; color: #94a3b8; margin-bottom: 10px; text-align: center; }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: center;
+    }
+    .toolbar button, .toolbar label.btn {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #cbd5e1;
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .toolbar button:hover, .toolbar label.btn:hover { background: #334155; }
+    .toolbar button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .toolbar button.primary:hover { background: #1d4ed8; }
+    .toolbar input[type="file"] { display: none; }
+    .toolbar .status { font-size: 11px; color: #64748b; margin-left: 8px; }
+    .toolbar .status.ok { color: #22c55e; }
+    .toolbar .status.warn { color: #f59e0b; }
+
+    /* Project info */
+    .project-info {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 8px 14px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .project-info span { color: #94a3b8; }
+    .project-info strong { color: #e2e8f0; }
+
+    /* Canvas */
+    .canvas-wrap {
+      background: #0f0f1a;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      position: relative;
+    }
+    .canvas {
+      position: relative;
+      background: #0f0f1a;
+      overflow: hidden;
+    }
+
+    /* Layer */
+    .layer {
+      position: absolute;
+      overflow: hidden;
+      cursor: grab;
+      user-select: none;
+    }
+    .layer:active { cursor: grabbing; }
+    .layer.selected { outline: 2px solid #3b82f6; z-index: 9999 !important; }
+    .layer img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      pointer-events: none;
+    }
+    .layer-label {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: rgba(15, 23, 42, 0.85);
+      color: #e2e8f0;
+      font-size: 10px;
+      padding: 3px 6px;
+      opacity: 0;
+      transition: opacity 0.15s;
+      pointer-events: none;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .layer:hover .layer-label { opacity: 1; }
+
+    /* Resize handles */
+    .resize-handle {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: #3b82f6;
+      border: 1px solid #1e293b;
+      border-radius: 2px;
+      display: none;
+      z-index: 10000;
+    }
+    .layer.selected .resize-handle { display: block; }
+    .resize-handle.nw { top: -5px; left: -5px; cursor: nw-resize; }
+    .resize-handle.n  { top: -5px; left: 50%; transform: translateX(-50%); cursor: n-resize; }
+    .resize-handle.ne { top: -5px; right: -5px; cursor: ne-resize; }
+    .resize-handle.w  { top: 50%; left: -5px; transform: translateY(-50%); cursor: w-resize; }
+    .resize-handle.e  { top: 50%; right: -5px; transform: translateY(-50%); cursor: e-resize; }
+    .resize-handle.sw { bottom: -5px; left: -5px; cursor: sw-resize; }
+    .resize-handle.s  { bottom: -5px; left: 50%; transform: translateX(-50%); cursor: s-resize; }
+    .resize-handle.se { bottom: -5px; right: -5px; cursor: se-resize; }
+
+    /* Editor panel */
+    .editor-panel {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin: 10px 0;
+      font-size: 12px;
+      width: 100%;
+      max-width: 600px;
+    }
+    .editor-panel h3 {
+      font-size: 13px;
+      color: #f8fafc;
+      margin-bottom: 8px;
+      border-bottom: 1px solid #334155;
+      padding-bottom: 6px;
+    }
+    .editor-panel .field {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .editor-panel label {
+      color: #94a3b8;
+      min-width: 60px;
+      flex-shrink: 0;
+    }
+    .editor-panel input[type="text"],
+    .editor-panel input[type="number"] {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      flex: 1;
+    }
+    .editor-panel input[type="number"] { width: 70px; flex: none; }
+    .editor-panel .row {
+      display: flex;
+      gap: 8px;
+    }
+    .editor-panel .row .field { flex: 1; }
+    .editor-panel .empty {
+      color: #64748b;
+      text-align: center;
+      padding: 10px;
+    }
+
+    /* Layer list */
+    .layer-list {
+      margin-top: 10px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: center;
+      max-width: 800px;
+    }
+    .layer-tag {
+      background: #1e293b;
+      border: 1px solid #334155;
+      color: #cbd5e1;
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .layer-tag:hover { background: #334155; }
+    .layer-tag.hidden { opacity: 0.4; text-decoration: line-through; }
+    .layer-tag.selected { border-color: #3b82f6; color: #3b82f6; }
+
+    /* Modal for load prompt */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 20000;
+    }
+    .modal {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 400px;
+      text-align: center;
+    }
+    .modal h2 { font-size: 16px; margin-bottom: 12px; }
+    .modal p { font-size: 12px; color: #94a3b8; margin-bottom: 16px; }
+    .modal button { margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Layer Designer — Interactive Preview</h1>
+  <div class="subtitle" id="subtitle">Load an <code>enhanced_layer_plan.json</code> to begin</div>
+
+  <div class="toolbar">
+    <input type="file" id="fileInput" accept=".json">
+    <label for="fileInput" class="btn">📂 Load JSON</label>
+    <button class="primary" onclick="saveJSON()">💾 Save JSON</button>
+    <button onclick="resetLayout()">↩ Reset</button>
+    <button onclick="fitToScreen()">⛶ Fit</button>
+    <span class="status" id="status"></span>
+  </div>
+
+  <div class="project-info" id="projectInfo" style="display:none;">
+    <span>Project: <strong id="pName">—</strong></span>
+    <span>Canvas: <strong id="pCanvas">—</strong></span>
+    <span>Layers: <strong id="pLayers">—</strong></span>
+  </div>
+
+  <div class="canvas-wrap" id="canvasWrap">
+    <div class="canvas" id="canvas"></div>
+  </div>
+
+  <div class="editor-panel" id="editorPanel">
+    <h3>📝 Layer Properties</h3>
+    <div class="empty">Select a layer to edit its properties</div>
+  </div>
+
+  <div class="layer-list" id="layerList"></div>
+
+  <script>
+    // ─── State ───
+    let data = null;
+    let originalData = null;
+    let selectedName = null;
+    let isDragging = false;
+    let isResizing = false;
+    let resizeDir = '';
+    let startX = 0, startY = 0;
+    let startLeft = 0, startTop = 0, startWidth = 0, startHeight = 0;
+    let canvasScale = 1;
+    let pendingImportLayer = null;
+
+    const canvas = document.getElementById('canvas');
+    const canvasWrap = document.getElementById('canvasWrap');
+    const statusEl = document.getElementById('status');
+    const editorPanel = document.getElementById('editorPanel');
+    const layerList = document.getElementById('layerList');
+    const subtitle = document.getElementById('subtitle');
+
+    // ─── Auto-load from same directory ───
+    fetch('./enhanced_layer_plan.json')
+      .then(r => { if (!r.ok) throw new Error('not found'); return r.json(); })
+      .then(json => { loadData(json); status('Auto-loaded enhanced_layer_plan.json', 'ok'); })
+      .catch(err => {
+        status('Auto-load failed — click Load JSON', 'warn');
+        showLoadModal();
+      });
+
+    // ─── File input handler ───
+    document.getElementById('fileInput').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        try {
+          const json = JSON.parse(ev.target.result);
+          loadData(json);
+          status('Loaded: ' + file.name, 'ok');
+          // Close modal if open
+          document.querySelectorAll('.modal-overlay').forEach(el => el.remove());
+        } catch (err) {
+          alert('Invalid JSON: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    function showLoadModal() {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal">
+          <h2>📂 Load Layout JSON</h2>
+          <p>Could not auto-load <code>enhanced_layer_plan.json</code>.<br>
+          Please click "Load JSON" to select your layout file.</p>
+          <button class="primary" onclick="document.getElementById('fileInput').click()">📂 Load JSON</button>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+      // Remove on click outside
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) overlay.remove();
+      });
+    }
+
+    // ─── Load Data ───
+    function loadData(json) {
+      data = JSON.parse(JSON.stringify(json));
+      originalData = JSON.parse(JSON.stringify(json));
+      renderAll();
+      document.getElementById('projectInfo').style.display = 'flex';
+      document.getElementById('pName').textContent = data.project || '—';
+      const dims = data.dimensions || {};
+      document.getElementById('pCanvas').textContent = (dims.width || '?') + ' × ' + (dims.height || '?');
+      document.getElementById('pLayers').textContent = (data.layers || []).length;
+      subtitle.innerHTML = 'Drag layers to reposition. Drag handles to resize. Click "Save JSON" to export.';
+    }
+
+    // ─── Render ───
+    function renderAll() {
+      if (!data) return;
+      const dims = data.dimensions || { width: 1024, height: 1024 };
+      canvas.style.width = dims.width + 'px';
+      canvas.style.height = dims.height + 'px';
+
+      // Clear
+      canvas.innerHTML = '';
+      layerList.innerHTML = '';
+
+      const order = data.stacking_order || [];
+      const orderMap = {};
+      order.forEach((name, i) => orderMap[name] = i);
+      const layers = [...(data.layers || [])].sort((a, b) => (orderMap[a.name] || 0) - (orderMap[b.name] || 0));
+
+      layers.forEach((layer, idx) => {
+        const l = layer.layout || {};
+        const el = document.createElement('div');
+        el.className = 'layer';
+        el.dataset.name = layer.name;
+        el.style.left = (l.x || 0) + 'px';
+        el.style.top = (l.y || 0) + 'px';
+        el.style.width = (l.width || 100) + 'px';
+        el.style.height = (l.height || 100) + 'px';
+        el.style.zIndex = orderMap[layer.name] || idx;
+
+        const img = document.createElement('img');
+        img.src = layer.source || '';
+        img.alt = layer.name;
+        img.onerror = () => {
+          // Image failed to load — show placeholder with import option
+          img.style.display = 'none';
+          const placeholder = document.createElement('div');
+          placeholder.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:rgba(30,41,59,0.8);border:1px dashed #475569;color:#94a3b8;font-size:11px;cursor:pointer;border-radius:4px;';
+          placeholder.textContent = '📂 Click to import image';
+          placeholder.title = 'Source not found: ' + (layer.source || 'none');
+          placeholder.onclick = (e) => {
+            e.stopPropagation();
+            importImageForLayer(layer.name);
+          };
+          el.appendChild(placeholder);
+        };
+
+        const label = document.createElement('div');
+        label.className = 'layer-label';
+        label.textContent = layer.name;
+
+        const handles = ['nw','n','ne','w','e','sw','s','se'].map(dir =>
+          `<div class="resize-handle ${dir}" data-dir="${dir}"></div>`
+        ).join('');
+
+        el.innerHTML = '';
+        el.appendChild(img);
+        el.appendChild(label);
+        el.insertAdjacentHTML('beforeend', handles);
+        canvas.appendChild(el);
+
+        // Events
+        el.addEventListener('mousedown', onLayerMouseDown);
+
+        // Layer tag
+        const tag = document.createElement('button');
+        tag.className = 'layer-tag';
+        tag.textContent = layer.name;
+        tag.dataset.name = layer.name;
+        tag.onclick = () => selectLayer(layer.name);
+        layerList.appendChild(tag);
+      });
+
+      // Resize handle events
+      canvas.querySelectorAll('.resize-handle').forEach(h => {
+        h.addEventListener('mousedown', onHandleMouseDown);
+      });
+
+      updateEditor();
+    }
+
+    // ─── Mouse Events ───
+    function onLayerMouseDown(e) {
+      if (e.target.classList.contains('resize-handle')) return;
+      e.stopPropagation();
+      selectLayer(e.currentTarget.dataset.name);
+      isDragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      const el = getLayerEl(selectedName);
+      startLeft = parseInt(el.style.left) || 0;
+      startTop = parseInt(el.style.top) || 0;
+    }
+
+    function onHandleMouseDown(e) {
+      e.stopPropagation();
+      e.preventDefault();
+      isResizing = true;
+      resizeDir = e.target.dataset.dir;
+      selectedName = e.target.closest('.layer').dataset.name;
+      selectLayer(selectedName);
+      startX = e.clientX;
+      startY = e.clientY;
+      const el = getLayerEl(selectedName);
+      startLeft = parseInt(el.style.left) || 0;
+      startTop = parseInt(el.style.top) || 0;
+      startWidth = parseInt(el.style.width) || 0;
+      startHeight = parseInt(el.style.height) || 0;
+    }
+
+    document.addEventListener('mousemove', (e) => {
+      if (isDragging && selectedName) {
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        const el = getLayerEl(selectedName);
+        el.style.left = (startLeft + dx) + 'px';
+        el.style.top = (startTop + dy) + 'px';
+        syncLayoutFromDOM(selectedName);
+        updateEditor();
+      }
+      if (isResizing && selectedName) {
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        let newLeft = startLeft, newTop = startTop;
+        let newWidth = startWidth, newHeight = startHeight;
+        if (resizeDir.includes('e')) newWidth = Math.max(20, startWidth + dx);
+        if (resizeDir.includes('w')) { newWidth = Math.max(20, startWidth - dx); newLeft = startLeft + (startWidth - newWidth); }
+        if (resizeDir.includes('s')) newHeight = Math.max(20, startHeight + dy);
+        if (resizeDir.includes('n')) { newHeight = Math.max(20, startHeight - dy); newTop = startTop + (startHeight - newHeight); }
+        const el = getLayerEl(selectedName);
+        el.style.left = newLeft + 'px';
+        el.style.top = newTop + 'px';
+        el.style.width = newWidth + 'px';
+        el.style.height = newHeight + 'px';
+        syncLayoutFromDOM(selectedName);
+        updateEditor();
+      }
+    });
+
+    document.addEventListener('mouseup', () => { isDragging = false; isResizing = false; });
+
+    // Click anywhere outside interactive elements to deselect
+    document.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.layer') ||
+          e.target.closest('.resize-handle') ||
+          e.target.closest('.editor-panel') ||
+          e.target.closest('.toolbar') ||
+          e.target.closest('.layer-tag')) {
+        return;
+      }
+      deselectAll();
+    });
+
+    // ─── Selection ───
+    function selectLayer(name) {
+      deselectAll();
+      selectedName = name;
+      const el = getLayerEl(name);
+      if (el) el.classList.add('selected');
+      const tag = layerList.querySelector('.layer-tag[data-name="' + name + '"]');
+      if (tag) tag.classList.add('selected');
+      updateEditor();
+    }
+
+    function deselectAll() {
+      const order = data ? (data.stacking_order || []) : [];
+      canvas.querySelectorAll('.layer').forEach(l => {
+        l.classList.remove('selected');
+        // Restore original z-index from stacking_order
+        const name = l.dataset.name;
+        const idx = order.indexOf(name);
+        l.style.zIndex = idx >= 0 ? idx : 0;
+      });
+      layerList.querySelectorAll('.layer-tag').forEach(t => t.classList.remove('selected'));
+      selectedName = null;
+      updateEditor();
+    }
+
+    function getLayerEl(name) {
+      return canvas.querySelector('.layer[data-name="' + name + '"]');
+    }
+
+    function toggleLayer(name) {
+      const el = getLayerEl(name);
+      const tag = layerList.querySelector('.layer-tag[data-name="' + name + '"]');
+      if (el) {
+        const hidden = el.style.display === 'none';
+        el.style.display = hidden ? 'block' : 'none';
+        if (tag) tag.classList.toggle('hidden', !hidden);
+      }
+    }
+
+    // ─── Sync DOM → Data ───
+    function syncLayoutFromDOM(name) {
+      const el = getLayerEl(name);
+      if (!el) return;
+      const layer = (data.layers || []).find(l => l.name === name);
+      if (!layer) return;
+      layer.layout = {
+        x: parseInt(el.style.left) || 0,
+        y: parseInt(el.style.top) || 0,
+        width: parseInt(el.style.width) || 0,
+        height: parseInt(el.style.height) || 0
+      };
+    }
+
+    // ─── Editor Panel ───
+    function updateEditor() {
+      if (!selectedName || !data) {
+        editorPanel.innerHTML = '<h3>📝 Layer Properties</h3><div class="empty">Select a layer to edit its properties</div>';
+        return;
+      }
+      const layer = (data.layers || []).find(l => l.name === selectedName);
+      if (!layer) return;
+      const l = layer.layout || {};
+      editorPanel.innerHTML = `
+        <h3>📝 Layer Properties</h3>
+        <div class="field"><label>Name</label><input type="text" id="edName" value="${esc(layer.name)}" onchange="updateProp('name', this.value)"></div>
+        <div class="field"><label>Content</label><input type="text" id="edContent" value="${esc(layer.content || '')}" onchange="updateProp('content', this.value)"></div>
+        <div class="field"><label>Status</label><input type="text" id="edStatus" value="${esc(layer.status || '')}" onchange="updateProp('status', this.value)"></div>
+        <div class="row">
+          <div class="field"><label>X</label><input type="number" id="edX" value="${l.x || 0}" onchange="updateLayout('x', this.value)"></div>
+          <div class="field"><label>Y</label><input type="number" id="edY" value="${l.y || 0}" onchange="updateLayout('y', this.value)"></div>
+          <div class="field"><label>W</label><input type="number" id="edW" value="${l.width || 0}" onchange="updateLayout('width', this.value)"></div>
+          <div class="field"><label>H</label><input type="number" id="edH" value="${l.height || 0}" onchange="updateLayout('height', this.value)"></div>
+        </div>
+        <div class="field"><label>Source</label><input type="text" value="${esc(layer.source || '')}" readonly style="opacity:0.6;"></div>
+        <div style="margin-top:10px; display:flex; gap:8px;">
+          <button onclick="toggleLayer('${esc(selectedName)}'); updateEditor();" style="background:#1e293b; border:1px solid #334155; color:#cbd5e1; padding:5px 12px; border-radius:6px; font-size:12px; cursor:pointer;">
+            ${getLayerEl(selectedName)?.style.display === 'none' ? '👁 Show' : '🙈 Hide'} Layer
+          </button>
+        </div>
+      `;
+    }
+
+    function updateProp(key, value) {
+      if (!selectedName || !data) return;
+      const layer = (data.layers || []).find(l => l.name === selectedName);
+      if (layer) layer[key] = value;
+      if (key === 'name') {
+        // Re-render to update DOM
+        renderAll();
+        selectLayer(value);
+      }
+    }
+
+    function updateLayout(key, value) {
+      if (!selectedName || !data) return;
+      const v = parseInt(value);
+      if (isNaN(v)) return;
+      const layer = (data.layers || []).find(l => l.name === selectedName);
+      if (layer) {
+        layer.layout = layer.layout || {};
+        layer.layout[key] = v;
+      }
+      const el = getLayerEl(selectedName);
+      if (el) {
+        if (key === 'x') el.style.left = v + 'px';
+        if (key === 'y') el.style.top = v + 'px';
+        if (key === 'width') el.style.width = v + 'px';
+        if (key === 'height') el.style.height = v + 'px';
+      }
+    }
+
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    // ─── Save / Reset ───
+    function saveJSON() {
+      if (!data) { alert('No data loaded'); return; }
+      const out = JSON.parse(JSON.stringify(data));
+      out.updated_at = new Date().toISOString();
+      const blob = new Blob([JSON.stringify(out, null, 2)], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (data.project || 'project') + '_enhanced_layer_plan.json';
+      a.click();
+      URL.revokeObjectURL(url);
+      status('Exported: ' + a.download, 'ok');
+    }
+
+    function resetLayout() {
+      if (!originalData) return;
+      data = JSON.parse(JSON.stringify(originalData));
+      renderAll();
+      status('Reset to original layout', 'ok');
+    }
+
+    function fitToScreen() {
+      if (!data) return;
+      const dims = data.dimensions || { width: 1024, height: 1024 };
+      const availW = window.innerWidth - 40;
+      const availH = window.innerHeight - 300;
+      const scale = Math.min(availW / dims.width, availH / dims.height, 1);
+      canvasWrap.style.transform = 'scale(' + scale + ')';
+      canvasWrap.style.transformOrigin = 'top center';
+      canvasScale = scale;
+    }
+
+    function importImageForLayer(layerName) {
+      pendingImportLayer = layerName;
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/png,image/jpeg,image/webp';
+      input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const dataUrl = ev.target.result;
+          // Update the layer's source in data
+          const layer = (data.layers || []).find(l => l.name === layerName);
+          if (layer) {
+            layer.source = dataUrl;
+            // Re-render just this layer's image
+            const el = getLayerEl(layerName);
+            if (el) {
+              const oldImg = el.querySelector('img');
+              const placeholder = el.querySelector('div');
+              if (placeholder) placeholder.remove();
+              if (oldImg) {
+                oldImg.src = dataUrl;
+                oldImg.style.display = 'block';
+                oldImg.onerror = null;
+              }
+            }
+            status('Imported image for ' + layerName, 'ok');
+          }
+        };
+        reader.readAsDataURL(file);
+      };
+      input.click();
+    }
+
+    function status(text, cls) {
+      statusEl.textContent = text;
+      statusEl.className = 'status ' + (cls || '');
+    }
+
+    // Keyboard
+    document.addEventListener('keydown', (e) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedName) {
+        toggleLayer(selectedName);
+      }
+    });
+  </script>
+</body>
+</html>
