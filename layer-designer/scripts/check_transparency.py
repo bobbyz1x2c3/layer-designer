@@ -50,7 +50,62 @@ def _sample_pixels(img: Image.Image, count: int = 2000) -> list:
     return [pixels[x, y] for x, y in coords]
 
 
-def remove_background(image_path: str, output_path: str, matting_config: dict | None = None) -> dict:
+def _detect_large_foreground(img: Image.Image, stage1_ratio: float = 0.70) -> tuple[tuple[int, ...], float]:
+    """Detect if the foreground dominates the image.
+
+    Samples edge pixels (narrow border) to estimate background color,
+    then counts how many pixels differ significantly from that color.
+
+    Args:
+        img: Input image
+        border_ratio: Fraction of width/height to use as edge border.
+                      Default 0.02 (2%) — small enough to avoid sampling
+                      the foreground itself when it dominates the image.
+
+    Returns:
+        (edge_color_tuple, foreground_ratio)
+    """
+    width, height = img.size
+    # Convert to RGB for uniform handling
+    rgb = img.convert("RGB")
+    pixels = rgb.load()
+
+    # Sample edge pixels: narrow border (default 2%)
+    edge_pixels = []
+    border_ratio = max(0.01, 0.4 * (1 - stage1_ratio))
+    border_x = max(1, int(width * border_ratio))
+    border_y = max(1, int(height * border_ratio))
+    for y in range(height):
+        for x in range(width):
+            if x < border_x or x >= width - border_x or y < border_y or y >= height - border_y:
+                edge_pixels.append(pixels[x, y])
+
+    if not edge_pixels:
+        return ((255, 255, 255), 1.0)
+
+    # Average edge color
+    r = sum(p[0] for p in edge_pixels) // len(edge_pixels)
+    g = sum(p[1] for p in edge_pixels) // len(edge_pixels)
+    b = sum(p[2] for p in edge_pixels) // len(edge_pixels)
+    edge_color = (r, g, b)
+
+    # Count pixels that differ significantly from edge color
+    diff_threshold = 30  # RGB delta threshold
+    different_count = 0
+    sample_step = max(1, (width * height) // 2000)
+    for y in range(0, height, sample_step):
+        for x in range(0, width, sample_step):
+            p = pixels[x, y]
+            delta = abs(p[0] - r) + abs(p[1] - g) + abs(p[2] - b)
+            if delta > diff_threshold:
+                different_count += 1
+
+    total_samples = ((width + sample_step - 1) // sample_step) * ((height + sample_step - 1) // sample_step)
+    fg_ratio = different_count / total_samples if total_samples > 0 else 1.0
+    return (edge_color, fg_ratio)
+
+
+def remove_background(image_path: str, output_path: str, matting_config: dict | None = None, auto_pad: bool = True) -> dict:
     """
     Auto-matte: remove background using rembg (configurable deep-learning model).
 
@@ -101,20 +156,79 @@ def remove_background(image_path: str, output_path: str, matting_config: dict | 
             print(f"[WARNING] Configured model_file not found: {custom_path}")
 
     from rembg import remove, new_session
-    session = new_session(model_name)
-    img = Image.open(image_path)
-    result = remove(
-        img,
-        session=session,
-        alpha_matting=alpha_matting,
-        alpha_matting_foreground_threshold=fg_threshold,
-        alpha_matting_background_threshold=bg_threshold,
-        alpha_matting_erode_size=erode_size,
-    )
-    result.save(output_path)
 
-    alpha = np.array(result.getchannel("A"))
-    transparent_count = int(np.sum(alpha == 0))
+    original_img = Image.open(image_path)
+    original_size = original_img.size
+    total_pixels = original_size[0] * original_size[1]
+
+    def _matte(img: Image.Image) -> Image.Image:
+        """Run rembg on a Pillow image and return RGBA result."""
+        session = new_session(model_name)
+        return remove(
+            img,
+            session=session,
+            alpha_matting=alpha_matting,
+            alpha_matting_foreground_threshold=fg_threshold,
+            alpha_matting_background_threshold=bg_threshold,
+            alpha_matting_erode_size=erode_size,
+        )
+
+    def _count_transparent(img: Image.Image) -> int:
+        """Count fully transparent pixels (alpha == 0)."""
+        alpha = np.array(img.getchannel("A"))
+        return int(np.sum(alpha == 0))
+
+    def _pad_and_matte_square(img: Image.Image, long_edge_ratio: float, edge_color):
+        """Pad to a square where the long edge is expanded by the given ratio.
+        The short edge is padded to match the new long edge length.
+        Then matte and crop back to original size."""
+        w, h = original_size
+        long_edge = max(w, h)
+        new_size = int(long_edge * (1 + long_edge_ratio))
+        # Ensure square is large enough for both dimensions
+        new_size = max(new_size, w, h)
+
+        pad_left = (new_size - w) // 2
+        pad_top = (new_size - h) // 2
+
+        padded_img = Image.new(img.mode, (new_size, new_size), edge_color)
+        padded_img.paste(img, (pad_left, pad_top))
+
+        result = _matte(padded_img)
+        crop_x = (result.width - w) // 2
+        crop_y = (result.height - h) // 2
+        return result.crop((crop_x, crop_y, crop_x + w, crop_y + h))
+
+    # --- Stage 1: Normal matting ---
+    result = _matte(original_img)
+    transparent_count = _count_transparent(result)
+    transparent_ratio = transparent_count / total_pixels
+    stage1_ratio = transparent_ratio
+    padded = False
+    skipped = False
+
+    # --- Stage 2: square padding (long edge +40%) retry if >70% transparent ---
+    if auto_pad and stage1_ratio > 0.70:
+        edge_color, _ = _detect_large_foreground(original_img, stage1_ratio)
+        result = _pad_and_matte_square(original_img, 0.40, edge_color)
+        transparent_count = _count_transparent(result)
+        transparent_ratio = transparent_count / total_pixels
+        padded = True
+
+        # Dynamic threshold coefficient: 1.0 @ 70% -> 1.1 @ 100%
+        # threshold = coefficient - stage1_ratio
+        coefficient = 1.0 + (stage1_ratio - 0.70) / 0.30 * 0.10
+        threshold = coefficient - stage1_ratio
+        if transparent_ratio >= threshold:
+            original_img.save(output_path)
+            transparent_count = 0
+            transparent_ratio = 0.0
+            padded = False
+            skipped = True
+
+    if not skipped:
+        result.save(output_path)
+
     method_name = f"rembg_{model_name}"
     if alpha_matting:
         method_name += "_alpha_matting"
@@ -123,6 +237,9 @@ def remove_background(image_path: str, output_path: str, matting_config: dict | 
         "method": method_name,
         "transparent_pixels": transparent_count,
         "output_path": output_path,
+        "padded": padded,
+        "skipped": skipped,
+        "transparent_ratio": round(transparent_count / total_pixels, 4),
     }
 
 
@@ -290,6 +407,10 @@ def main():
                         help="After background removal, crop image to content bounding box (for extreme-ratio layers)")
     parser.add_argument("--crop-padding", type=int, default=0,
                         help="Padding in pixels when auto-cropping (default 0)")
+    parser.add_argument("--pad", action="store_true",
+                        help="Force padding mode for large-foreground images before matting")
+    parser.add_argument("--no-pad", action="store_true",
+                        help="Disable auto-padding for large-foreground images")
     args = parser.parse_args()
 
     # Load config defaults
@@ -330,7 +451,12 @@ def main():
             p = Path(args.image)
             output_path = str(p.with_suffix("")) + "_rgba.png"
 
-        matte_result = remove_background(args.image, output_path, matting_cfg)
+        auto_pad = True
+        if args.pad:
+            auto_pad = True
+        elif args.no_pad:
+            auto_pad = False
+        matte_result = remove_background(args.image, output_path, matting_cfg, auto_pad=auto_pad)
         result["matte"] = matte_result
         # Override has_transparency since we now have a matte output
         if matte_result.get("transparent_pixels", 0) > 0:

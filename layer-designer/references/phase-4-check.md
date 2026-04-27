@@ -52,6 +52,8 @@ The API endpoint currently outputs RGB mode PNGs (no real alpha channel). When `
 
 **Note**: The `--remove-bg` flag now always triggers rembg when explicitly passed, regardless of detection result. This is a best-effort optimization — even if no solid background was detected, rembg may still produce usable results. True RGBA images with alpha==0 pixels are not re-processed (they already have transparency).
 
+**Auto-padding for large-foreground layers**: When a UI control occupies most of the image (e.g., a full-width banner or large panel), rembg may misclassify the foreground as background. `check_transparency.py` automatically detects this condition (foreground > 70% of pixels) and adds temporary padding before matting, then crops back to the original size. The JSON output includes `"padded": true` when this happens. Use `--pad` to force padding, or `--no-pad` to disable it.
+
 ---
 
 ## Step 2: Generate Enhanced Layer Plan
