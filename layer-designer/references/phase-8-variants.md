@@ -33,8 +33,15 @@
 
 For each requested control:
 1. Identify which layer contains this control
-2. Take the final refined layer image for that control
-3. Determine needed states (hover, active, disabled, focused, checked, etc.)
+2. Read the control's `layout.width` and `layout.height` from `layer_plan.json`
+3. **Compute compliant control size** (same logic as Phase 3 / Phase 6):
+   ```python
+   from path_manager import PathManager
+   control_w, control_h = PathManager.compute_layer_size(layout.width, layout.height)
+   ```
+   This returns a **compliant canvas size matching the control's aspect ratio**.
+4. Take the final refined layer image for that control
+5. Determine needed states (hover, active, disabled, focused, checked, etc.)
 
 **Batch generation** (recommended):
 ```bash
@@ -42,7 +49,7 @@ python scripts/generate_variants.py \
   --config config.json \
   --image {control_layer.png} --control-type button \
   --states hover active disabled \
-  --output-dir {variant_dir} --size {full_w}x{full_h} --quality high
+  --output-dir {variant_dir} --size {control_w}x{control_h} --quality high
 ```
 
 **Individual generation**:
@@ -50,31 +57,68 @@ python scripts/generate_variants.py \
 python scripts/generate_image.py edit \
   --config config.json \
   --image {control_layer.png} \
-  --prompt "This is a {control_type} in normal state. Generate the same control in {state} state. Maintain exact dimensions, colors, typography, border radius, shadow style. Changes for {state}: {state_specific_changes}. {style_anchor}. Transparent background." \
-  --output {variant_path} --size {full_w}x{full_h} --quality high
+  --prompt "This is a {control_type} in normal state. Generate the same control in {state} state. Maintain exact dimensions, colors, typography, border radius, shadow style. Changes for {state}: {state_specific_changes}. {style_anchor}. Transparent background. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions." \
+  --output {variant_path} --size {control_w}x{control_h} --quality high
 ```
 
-- `size`: `full_size` from `size_plan.json` (already validated in Phase 1 — do NOT modify)
-- `quality`: `high`
+- `size`: **per-control compliant size** from `compute_layer_size()` — usually NOT `full_size`
+- `quality`: **inherit the control's `quality_tier` from `layer_plan.json`** — do NOT blindly use `high`. If the control was assigned `low` or `medium` in Phase 2/6, use that tier for variants too.
 - Save via `PathManager.get_variant_path(control_name, state)`
 
 ---
 
-## Step 3: Parallel Execution (Optional)
+## Step 3: Transparency Check & Matte Generation
+
+**Script**: `check_transparency.py`
+
+For **every generated state variant**, verify it has real alpha transparency:
+
+```bash
+python scripts/check_transparency.py --config config.json --image {variant_path}
+```
+
+**If the result indicates no real transparency** (e.g., RGB mode with solid background):
+
+1. **Keep the original** — do not delete or overwrite the source variant image.
+
+2. **Auto-remove background** via rembg, saving to a **new** matte file:
+   ```bash
+   python scripts/check_transparency.py --config config.json \
+     --image {variant_path} --remove-bg --output {matte_path}
+   ```
+   - `{matte_path}` should be `{variant_dir}/{control_name}_{state}_matte.png`
+   - Uses the configured matting model from `config.json`
+   - Outputs true RGBA PNG with feathered edges
+   - The original variant image remains intact
+
+3. **Verify the matte**:
+   ```bash
+   python scripts/check_transparency.py --config config.json --image {matte_path}
+   ```
+   - Confirm `has_transparency: true` and `detection_method` is not `solid_background_fallback`
+
+> ⚠️ Same as Phase 6: it is **expected** that most API endpoints output RGB mode PNGs. The `--remove-bg` step is standard post-processing, not an error.
+
+---
+
+## Step 4: Parallel Execution (Optional)
 
 If enabled and supported:
 - All control × state combinations are independent
-- Spawn subagents up to `parallel_max_workers` to generate variants concurrently
+- Transparency check and matte generation can also run in parallel per variant
+- Spawn subagents up to `parallel_max_workers` to generate variants and process mattes concurrently
 
 ---
 
-## Step 4: Present Variants
+## Step 5: Present Variants
 
 Present all variant images organized by control and state.
+Use matte versions (`*_matte.png`) as the final deliverable if they pass transparency verification.
 
 ---
 
-**Exit Condition**: All variants generated and presented.
+**Exit Condition**: All variants generated, transparency-checked, and matte-processed.
 
 **Output upon exit**:
 - State variant images in `08-variants/{control_name}/`
+- Matte versions (`*_matte.png`) for variants that lacked native alpha transparency

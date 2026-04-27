@@ -125,13 +125,23 @@ Maintain all elements and layout exactly.
 Professional UI mockup quality.
 ```
 
-### Phase 6: High-Quality Layer Refinement
+### Phase 6: High-Quality Layer Refinement (Element — Transparent)
 
 ```
 From this high-quality UI preview, extract ONLY the {element_name}.
 High quality, polished, pixel-perfect.
 CRITICAL: Transparent background (PNG with alpha channel).
 Preserve exact style, colors, and proportions.
+```
+
+### Phase 6: Background Layer Refinement (Non-transparent)
+
+```
+From this high-quality UI preview, extract ONLY the background layer.
+Include: {background_elements — e.g., gradient, texture, pattern, environment}.
+Full canvas filled completely. NO transparent areas.
+NO UI elements, NO buttons, NO text, NO icons, NO overlays.
+Only the pure background.
 ```
 
 ### Phase 8: Control State Variants

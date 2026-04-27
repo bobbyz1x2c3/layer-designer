@@ -61,6 +61,8 @@ For each layer, **preserving the same stacking order from Phase 3**:
    - **NEVER construct a size string manually** without going through `compute_layer_size()` first
 2. Generate refined layer:
 
+**Element layers** (non-background, requires transparency):
+
 ```bash
 python scripts/generate_image.py edit \
   --config config.json \
@@ -69,13 +71,25 @@ python scripts/generate_image.py edit \
   --output {final_layer_path} --size {layer_w}x{layer_h} --quality {tier}
 ```
 
-- `size`: per-layer compliant size from `compute_layer_size()` (background uses full `full_size`)
+- `size`: per-layer compliant size from `compute_layer_size()`
 - `quality`: **visually reassessed** quality tier from Step 2 (NOT blindly inherited from Phase 3)
 - **Native model path**: Pass both preview and rough layer as references if multi-image input is supported; otherwise use preview + detailed description
 - **External API path**: Use `generate_image.py edit` (command above)
 - Save via `PathManager.get_final_layer_path(layer_name)`
 
-**Background layer**: Use full canvas `full_size` instead of `compute_layer_size()`. Generate full background without transparency requirement.
+**Background layer** (full canvas, NO transparency, NO UI elements):
+
+```bash
+python scripts/generate_image.py edit \
+  --config config.json \
+  --image {high_quality_preview} \
+  --prompt "From this UI design, extract ONLY the background layer. Include: {background_description}. Full canvas filled completely. NO transparent areas. NO UI elements, NO buttons, NO text, NO icons, NO overlays. Only the pure background fill, texture, gradient, or environment. {style_anchor}." \
+  --output {final_layer_path} --size {full_w}x{full_h} --quality {tier}
+```
+
+- `size`: full canvas `full_size` from `size_plan.json` (do NOT use `compute_layer_size()`)
+- `quality`: **visually reassessed** quality tier from Step 2
+- Save via `PathManager.get_final_layer_path(layer_name)`
 
 ---
 
