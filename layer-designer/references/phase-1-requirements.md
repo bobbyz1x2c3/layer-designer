@@ -301,9 +301,27 @@ After the user confirms the preview (Step 8 OK):
 | `description` | ✅ | Content description for prompt generation |
 | `layout` | ✅ | `{"x", "y", "width", "height"}` — bounding box in full canvas coordinates |
 | `quality_tier` | ✅ | `low` / `medium` / `high` |
+| `opacity` | ✅ | `0.2` ~ `1.0` — visual opacity when stacked over other layers (see judgment rules below) |
 | `is_background` | Optional | `true` for background layer |
 | `stack_order` | Optional | Integer position in stack (used if no top-level `stacking_order`) |
 | `states` | Optional | Array of state names (e.g., `["hover", "active"]`) |
+
+**Visual Opacity Judgment** (same as Standard Mode Phase 2 Step 5):
+
+For each layer, visually judge whether it should be **semi-transparent** when stacked over other layers:
+
+| Opacity | Visual Type | Examples |
+|---------|-------------|----------|
+| `1.0` | Fully opaque | Solid backgrounds, characters, icons, text labels |
+| `0.75–0.9` | Slightly translucent | Frosted glass panels, card backgrounds with blur |
+| `0.5–0.7` | Moderately transparent | Floating overlays, HUD elements, modal backdrops |
+| `0.2–0.4` | Highly transparent | Glow effects, particle layers, vignettes |
+
+**How to judge**:
+- Use the agent's visual understanding on the confirmed preview
+- A glass panel that shows underlying content underneath → translucent
+- A solid button or icon with no visible background bleed → opaque
+- A glow or shadow effect → highly transparent
 
 **Example `layer_plan.json` structure**:
 ```json
@@ -318,6 +336,7 @@ After the user confirms the preview (Step 8 OK):
       "description": "Solid dark navy fill with subtle gradient texture",
       "is_background": true,
       "quality_tier": "low",
+      "opacity": 1.0,
       "layout": {"x": 0, "y": 0, "width": 1920, "height": 1080}
     },
     {
@@ -325,6 +344,7 @@ After the user confirms the preview (Step 8 OK):
       "name": "侧边栏",
       "description": "Left navigation bar with icons and labels",
       "quality_tier": "medium",
+      "opacity": 0.9,
       "layout": {"x": 0, "y": 80, "width": 240, "height": 1000}
     },
     {
@@ -332,6 +352,7 @@ After the user confirms the preview (Step 8 OK):
       "name": "顶部标题栏",
       "description": "Top bar with logo, search input, avatar",
       "quality_tier": "medium",
+      "opacity": 1.0,
       "layout": {"x": 240, "y": 0, "width": 1680, "height": 80}
     }
   ],
@@ -381,7 +402,7 @@ Style Anchor: 暗色主题，圆角 8px，蓝色主色调 #3B82F6...
 □ layer_plan.json exists and contains: dimensions, layers[], stacking_order[], style_anchor
 □ size_plan.json exists and contains: full_size, early_size
 □ style_anchor string is non-empty
-□ All layer objects have: id, name, description, layout, quality_tier
+□ All layer objects have: id, name, description, layout, quality_tier, opacity
 ```
 
 Only after all checks pass: proceed to Phase 3.

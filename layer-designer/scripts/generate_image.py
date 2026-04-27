@@ -221,9 +221,9 @@ def _async_http_request(base_url: str, api_key: str, method: str, path: str,
         "Content-Type": "application/json",
     }
     if method.upper() == "GET":
-        resp = requests.get(url, headers=headers, timeout=30)
+        resp = requests.get(url, headers=headers, timeout=180)
     else:
-        resp = requests.post(url, json=json_data, headers=headers, timeout=30)
+        resp = requests.post(url, json=json_data, headers=headers, timeout=180)
     resp.raise_for_status()
     return resp.json()
 

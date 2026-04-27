@@ -200,12 +200,8 @@ def verify_installation():
 
     script_dir = Path(__file__).parent.resolve()
     model_dir = script_dir.parent / "models"
-    if (model_dir / "u2net.onnx").exists():
-        print("[OK] U²Net model present")
-    else:
-        print("[WARNING] U²Net model missing")
 
-    # Check configured matting model
+    # Check configured matting model (or u2net as default)
     try:
         from config_loader import load_config, get_matting_config
         config_path = script_dir.parent / "config.json"
@@ -213,11 +209,12 @@ def verify_installation():
             cfg = load_config(config_path)
             matting = get_matting_config(cfg)
             model_name = matting["model"]
-            if model_name != "u2net":
-                if (model_dir / f"{model_name}.onnx").exists():
-                    print(f"[OK] Matting model ({model_name}) present")
-                else:
-                    print(f"[WARNING] Matting model ({model_name}) missing — run setup again after setting matting.model in config.json")
+        else:
+            model_name = "u2net"
+        if (model_dir / f"{model_name}.onnx").exists():
+            print(f"[OK] Matting model ({model_name}) present")
+        else:
+            print(f"[WARNING] Matting model ({model_name}) missing — run setup again after setting matting.model in config.json")
     except Exception as e:
         print(f"[WARNING] Could not verify matting model: {e}")
 
@@ -261,9 +258,9 @@ def main():
 
     check_python_version()
     install_dependencies()
-    download_model("u2net", mirror=mirror)
 
-    # If config already exists, also download the configured matting model
+    # Download the configured matting model (or u2net as default if no config yet)
+    model_to_download = "u2net"
     try:
         from config_loader import load_config, get_matting_config
         script_dir = Path(__file__).parent.resolve()
@@ -271,11 +268,16 @@ def main():
         if config_path.exists():
             cfg = load_config(config_path)
             matting = get_matting_config(cfg)
-            if matting["model"] != "u2net":
-                download_model(matting["model"], mirror=mirror)
+            model_to_download = matting["model"]
+            print(f"\n[INFO] Matting model configured: {model_to_download}")
+        else:
+            print("\n[INFO] No config.json found. Defaulting to u2net.")
+            print("        Set matting.model in config.json to use a different model.")
     except Exception as e:
         print(f"\n[WARNING] Could not check matting model config: {e}")
+        print("          Defaulting to u2net.")
 
+    download_model(model_to_download, mirror=mirror)
     create_config()
     verify_installation()
 
