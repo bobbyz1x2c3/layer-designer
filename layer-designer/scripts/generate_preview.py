@@ -74,6 +74,7 @@ def generate_enhanced_plan(
     project_name: str,
     phase: str,
     config_path: str | None = None,
+    apply_detected_layouts: bool = False,
 ) -> tuple[str, str]:
     """
     Generate enhanced_layer_plan.json and copy preview template.
@@ -127,6 +128,24 @@ def generate_enhanced_plan(
 
     output_dir = pm.get_phase_dir(output_phase)
 
+    # Load detection config (with defaults)
+    detection_cfg = {}
+    try:
+        cfg = load_config(config_path) if config_path else {}
+        detection_cfg = cfg.get("detection", {})
+    except Exception:
+        pass
+    warn_offset_threshold = detection_cfg.get("warn_offset_threshold", 0.30)
+
+    # Load detected layouts only when explicitly requested
+    detected_layouts = {}
+    if apply_detected_layouts:
+        detected_path = output_dir / "detected_layouts.json"
+        if detected_path.exists():
+            with open(detected_path, "r", encoding="utf-8") as f:
+                detected_data = json.load(f)
+            detected_layouts = detected_data.get("layers", {})
+
     # Build enhanced layers list
     layers = layer_plan.get("layers", [])
     # Support both top-level 'stacking_order' and per-layer 'stack_order'
@@ -170,18 +189,35 @@ def generate_enhanced_plan(
         else:
             scaled_layout = layout
 
+        # Use detected layout only when explicitly applied
+        final_layout = scaled_layout
+        if apply_detected_layouts and layer_id in detected_layouts:
+            dl = detected_layouts[layer_id]
+            if dl.get("method") == "template_match":
+                detected_layout = dl["detected"]
+                # Warn if detected position deviates significantly from planned
+                dx = detected_layout.get("x", 0) - scaled_layout.get("x", 0)
+                dy = detected_layout.get("y", 0) - scaled_layout.get("y", 0)
+                offset_dist = (dx * dx + dy * dy) ** 0.5
+                avg_size = (scaled_layout.get("width", 1) + scaled_layout.get("height", 1)) / 2
+                if avg_size > 0 and offset_dist / avg_size > warn_offset_threshold:
+                    print(f"  [WARN] {layer_id}: detected position deviates {offset_dist:.0f}px "
+                          f"({offset_dist/avg_size*100:.0f}%) from planned layout")
+                final_layout = detected_layout
+
         # Support both 'description' and 'contents' for content field
         content = layer_info.get("description", "") or layer_info.get("contents", "")
 
-        enhanced_layers.append({
+        layer_entry = {
             "id": layer_id,
             "name": display_name,
             "content": content,
             "status": layer_info.get("status", "active"),
-            "layout": scaled_layout,
+            "layout": final_layout,
             "source": rel_path,
             "opacity": layer_info.get("opacity", 1.0),
-        })
+        }
+        enhanced_layers.append(layer_entry)
 
     enhanced_plan = {
         "project": project_name,
@@ -194,6 +230,15 @@ def generate_enhanced_plan(
 
     # Save enhanced_layer_plan.json with UTF-8 BOM for Windows compatibility
     plan_path = output_dir / "enhanced_layer_plan.json"
+
+    # Backup existing plan before overwriting with detected layouts
+    if apply_detected_layouts and detected_layouts and plan_path.exists():
+        from datetime import datetime
+        backup_path = plan_path.with_suffix(f".backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+        import shutil
+        shutil.copy2(plan_path, backup_path)
+        print(f"[BACKUP] Saved previous plan to {backup_path.name}")
+
     with open(plan_path, "w", encoding="utf-8-sig") as f:
         json.dump(enhanced_plan, f, indent=2, ensure_ascii=False)
 
@@ -223,11 +268,14 @@ def main():
     parser.add_argument("--project", "-p", required=True, help="Project name")
     parser.add_argument("--phase", choices=["rough", "refinement", "check", "output"], default="check",
                         help="Which phase (default: check)")
+    parser.add_argument("--apply-detected-layouts", action="store_true",
+                        help="Apply algorithmically detected layouts from detected_layouts.json")
     args = parser.parse_args()
 
     try:
         plan_path, preview_path = generate_enhanced_plan(
-            args.project, args.phase, config_path=args.config
+            args.project, args.phase, config_path=args.config,
+            apply_detected_layouts=args.apply_detected_layouts,
         )
         print(f"PLAN:    {plan_path}")
         print(f"PREVIEW: {preview_path}")

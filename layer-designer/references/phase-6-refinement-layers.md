@@ -67,7 +67,7 @@ For each layer, **preserving the same stacking order from Phase 3**:
 python scripts/generate_image.py edit \
   --config config.json \
   --image {high_quality_preview} \
-  --prompt "Extract ONLY the {layer_name}. {description}. High quality, polished, transparent background, isolated element. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fill the entire canvas. The element should occupy the maximum possible area while preserving its exact original proportions." \
+  --prompt "Extract ONLY the {layer_name}. {description}. High quality, polished, transparent background, isolated element. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fit within the canvas while leaving a small transparent margin of approximately 3-5% on each side. Do NOT let the element touch or overlap the canvas boundary. This margin ensures clean background removal in post-processing." \
   --output {final_layer_path} --size {layer_w}x{layer_h} --quality {tier}
 ```
 
@@ -137,6 +137,33 @@ If enabled and supported:
 - **Each subagent must also run `check_transparency.py --remove-bg` if needed**
 - Collect all refined layers before proceeding to Phase 7
 - **Verify layer order matches Phase 3 stacking order**
+
+### Async Task Fire-and-Forget Mode
+
+When using an `async_task` provider (e.g., apimart), each generation may take several minutes. To avoid agent timeout with many layers, use `--no-wait` to submit tasks without blocking:
+
+```bash
+python scripts/generate_image.py edit \
+  --config config.json \
+  --image {high_quality_preview} \
+  --prompt "{layer_prompt}" \
+  --output {final_layer_path} --size {layer_w}x{layer_h} --quality {tier} \
+  --no-wait
+```
+
+With `--no-wait`, the task is submitted, a pending record is saved to `06-refinement-layers/.pending_tasks.json`, and the script exits immediately.
+
+**Poll for results**:
+```bash
+python scripts/generate_image.py poll \
+  --pending-file 06-refinement-layers/.pending_tasks.json
+```
+
+**Agent timeout handling**: If the agent framework does not support cron/scheduling and the agent cannot retrieve all layer data within a single response after submitting tasks, the agent MUST include the following message in its reply:
+
+> "由于当前框架限制，任务当前正在进行中，可以随时提醒我检查任务进度并继续"
+
+The user can then remind the agent to check progress, and the agent will re-read the pending file and poll remaining tasks.
 
 ---
 

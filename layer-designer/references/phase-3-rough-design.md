@@ -50,7 +50,7 @@ For each layer identified in `layer_plan.json`, in the documented stacking order
    - Base: `Extract ONLY the {layer_name}. {description}.`
    - **If `opacity` < 1.0 (semi-transparent layer in the full design)**: append color purity guidance:
      > "This element sits on top of a background in the full design. When extracting it, preserve the element's own intrinsic colors and texture cleanly — do NOT blend background colors into the element. The element should retain its intended solid appearance with pure, unmixed colors."
-   - Always append: `Transparent background, PNG with alpha channel, only this element isolated. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fill the entire canvas. The element should occupy the maximum possible area while preserving its exact original proportions.`
+   - Always append: `Transparent background, PNG with alpha channel, only this element isolated. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fit within the canvas while leaving a small transparent margin of approximately 3-5% on each side. Do NOT let the element touch or overlap the canvas boundary. This margin ensures clean background removal in post-processing.`
 
 5. Generate isolated layer:
 
@@ -71,11 +71,8 @@ python scripts/generate_image.py edit \
 **Extreme-ratio layer handling**:
 - If `PathManager.is_extreme_ratio(layout.width, layout.height)` returns `True` (original ratio > model's `max_ratio`, e.g. > 3:1), the compliant canvas will be clamped to a different aspect ratio.
 - The existing prompt already instructs the model to "STRICTLY maintain the element's original aspect ratio", so the element should remain proportionally correct inside the canvas.
-- After generation and rembg, the layer image will have transparent padding on the shorter sides. **Agent MUST run auto-crop** to trim this padding:
-  ```bash
-  python scripts/check_transparency.py --config config.json --image {layer_path} --remove-bg --auto-crop --output {layer_path}
-  ```
-  This produces an additional `{layer_name}_cropped.png` with the element tightly cropped to its content bounding box.
+- After generation, the layer image will have transparent padding on the shorter sides. **Do NOT auto-crop in Phase 3** — the element is not yet matted and the alpha channel may be unreliable.
+- Instead, **record the `extreme_ratio: true` flag in `layer_plan.json`** for this layer. Phase 4 will handle auto-cropping **after** rembg produces a clean alpha channel.
 - `generate_preview.py` automatically prefers `*_cropped.png` when available, so Phase 4 preview will show the element at its true proportions.
 
 **Background layer exception**:
@@ -91,6 +88,33 @@ If `parallel_generation` is enabled and the agent supports subagents:
 - Spawn up to `parallel_max_workers` subagents, each handling one layer
 - Each subagent invokes `generate_image.py edit` independently
 - Master agent collects all results before proceeding to Phase 4
+
+### Async Task Fire-and-Forget Mode
+
+When using an `async_task` provider (e.g., apimart), each generation may take several minutes. To avoid agent timeout with many layers, use `--no-wait` to submit tasks without blocking:
+
+```bash
+python scripts/generate_image.py edit \
+  --config config.json \
+  --image {preview_path} \
+  --prompt "{layer_prompt}" \
+  --output {layer_path} --size {layer_w}x{layer_h} --quality {tier} \
+  --no-wait
+```
+
+With `--no-wait`, the task is submitted, a pending record is saved to `03-rough-design/.pending_tasks.json`, and the script exits immediately.
+
+**Poll for results**:
+```bash
+python scripts/generate_image.py poll \
+  --pending-file 03-rough-design/.pending_tasks.json
+```
+
+**Agent timeout handling**: If the agent framework does not support cron/scheduling and the agent cannot retrieve all layer data within a single response after submitting tasks, the agent MUST include the following message in its reply:
+
+> "由于当前框架限制，任务当前正在进行中，可以随时提醒我检查任务进度并继续"
+
+The user can then remind the agent to check progress, and the agent will re-read the pending file and poll remaining tasks.
 
 ---
 

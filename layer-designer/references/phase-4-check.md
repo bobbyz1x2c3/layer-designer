@@ -50,23 +50,91 @@ The API endpoint currently outputs RGB mode PNGs (no real alpha channel). When `
 
 5. **If user declines**: Skip this layer (treat as opaque) or return to Phase 3 to regenerate.
 
+### Post-matte auto-crop for all non-background layers
+
+After all layers have been matted (step 2 above), **run auto-crop on every non-background layer**:
+
+```bash
+python scripts/crop_to_content.py \
+  --input {matte_path} --output {cropped_path} --padding 4
+```
+
+- `{matte_path}`: the rembg output from step 2 (e.g. `{layer_name}_matte.png`)
+- `{cropped_path}`: `{layer_dir}/{layer_name}_cropped.png`
+- `--padding 4`: leaves a small 4px transparent margin around the element for clean edge compositing
+- This runs **after** rembg because `crop_to_content` needs a reliable alpha channel to detect content bounds. Cropping before matting is unreliable.
+- Layers whose content already fills the entire canvas will keep their original size (bbox equals full image) — no harm done.
+- Replace the matte version with the cropped version in `enhanced_layer_plan.json` source paths.
+
+**Why uniform cropping**: The updated Phase 3 prompt instructs the model to leave a 3-5% transparent margin around the element. After rembg, this margin becomes transparent padding that should be trimmed for tighter compositing.
+
+**`extreme_ratio` layers**: Layers flagged with `extreme_ratio: true` in `layer_plan.json` are also cropped here. The flag is preserved for informational purposes (e.g. debugging aspect ratio issues) but no longer triggers a separate crop path.
+
 **Note**: The `--remove-bg` flag now always triggers rembg when explicitly passed, regardless of detection result. This is a best-effort optimization — even if no solid background was detected, rembg may still produce usable results. True RGBA images with alpha==0 pixels are not re-processed (they already have transparency).
 
 **Auto-padding for large-foreground layers**: When a UI control occupies most of the image (e.g., a full-width banner or large panel), rembg may misclassify the foreground as background. `check_transparency.py` automatically detects this condition (foreground > 70% of pixels) and adds temporary padding before matting, then crops back to the original size. The JSON output includes `"padded": true` when this happens. Use `--pad` to force padding, or `--no-pad` to disable it.
 
 ---
 
-## Step 2: Generate Enhanced Layer Plan
+## Step 2: Detect Layer Positions (On-Demand — Algorithmic Layout Refinement)
+
+**Script**: `detect_layer_positions.py`
+
+This step is **not run by default**. It is offered to the user in Step 3 when they report that layers look misaligned in the preview.
+
+**What it does**:
+1. Reads each layer PNG (post-rembg/crop) as a template
+2. Uses `layer_plan.json` layout as reference origin + scale
+3. Searches a large ROI around the planned position (±200% margin)
+4. Tries multiple scales (0.65×–1.35× planned size) to handle `crop_to_content` drift
+5. Matches via downsampled SSD + fine refinement
+6. Outputs `04-check/detected_layouts.json`
+
+**Limitations** — tell the user before offering:
+- Layers with **high transparency** (opacity < 0.85) are skipped automatically because the preview shows blended colors while the extracted layer is opaque
+- Layers with **very few visible pixels** (e.g., a small icon on a large transparent canvas) may not match accurately
+- Independent AI-generated layers can have color differences from the preview, causing imperfect matches
+
+**When to run**: Only after the user confirms they want it. The agent should NOT run this automatically.
+
+**Workflow**:
+```bash
+# 1. User confirms they want algorithmic alignment
+# 2. Run detection (read-only, does not modify any layer images)
+python scripts/detect_layer_positions.py \
+  --project my-app --config config.json \
+  --preview output/my-app/01-requirements/previews/preview_v2_001.png \
+  --phase rough
+
+# 3. Apply detected layouts (backs up existing enhanced_layer_plan.json)
+python scripts/generate_preview.py \
+  --config config.json \
+  --project my-app \
+  --phase check \
+  --apply-detected-layouts
+```
+
+---
+
+## Step 3: Generate Enhanced Layer Plan
 
 **Script**: `generate_preview.py` (generates JSON + copies template)
 
 Generate the `enhanced_layer_plan.json` and copy the generic preview template:
 
 ```bash
+# Standard (scaled planned layouts)
 python scripts/generate_preview.py \
   --config config.json \
   --project {project_name} \
   --phase check
+
+# Apply algorithmically detected layouts (only after user confirms)
+python scripts/generate_preview.py \
+  --config config.json \
+  --project {project_name} \
+  --phase check \
+  --apply-detected-layouts
 ```
 
 This produces:
@@ -132,6 +200,11 @@ Send a message to the user with:
 > - 回复 **OK** → 进入精修阶段（Phase 5~7，高质量最终输出）
 > - 回复 **EXIT** → 不需要精修，直接使用当前粗稿图层交付（适合只需要效果图/预览的场景）
 > - 告诉我具体问题，或自行调整后导出 JSON。
+>
+> **布局偏移？** 如果发现某些图层位置不对，我可以尝试用多尺度模板匹配算法在预览图中找到更准确的位置。
+> - 适用于：不透明控件、角色立绘、按钮等**内容明确**的图层
+> - 不适用于：半透明面板（opacity < 0.85）、大面积透明只剩小图标的图层
+> - 需要时请回复：**"尝试算法对齐"**
 
 ---
 
@@ -143,6 +216,7 @@ Send a message to the user with:
 - **"OK"** → Proceed to Phase 5 (Refinement Preview)
 - **"EXIT" / "退出" / "不需要精修" / "直接交付"** → Proceed to Step 6 (Fast Delivery with rough layers)
 - **"I want to edit myself" / no reply yet** → Wait. The user may open `preview.html`, adjust the layout, and export a new JSON.
+- **"尝试算法对齐"** / **"use algorithm"** / **"align layers"** → Run Step 2 (`detect_layer_positions.py`), then re-run `generate_preview.py --apply-detected-layouts` (backs up the previous plan automatically), show the updated preview, and ask for confirmation again.
 - **Provides a new `enhanced_layer_plan.json`** → Replace the existing one in `04-check/`, optionally re-run `generate_preview.py` to refresh, then ask for confirmation again.
 - **Adjustment request** (describes issues) → Go to Step 5 (Batch Fix)
 

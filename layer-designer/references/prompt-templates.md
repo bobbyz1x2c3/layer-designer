@@ -104,7 +104,7 @@ Include: {specific_contents}.
 CRITICAL: Transparent background (PNG with alpha channel).
 Isolate this element completely. Do NOT include any other UI elements.
 Maintain exact colors, shadows, and style from the original.
-CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. The canvas preserves the element's aspect ratio. Scale the element proportionally to fill the entire canvas. The element should occupy the maximum possible area while preserving its exact original proportions.
+CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. The canvas preserves the element's aspect ratio. Scale the element proportionally to fit within the canvas while leaving a small transparent margin of approximately 3-5% on each side. Do NOT let the element touch or overlap the canvas boundary. This margin ensures clean background removal in post-processing.
 ```
 
 **Example - Button Layer**:

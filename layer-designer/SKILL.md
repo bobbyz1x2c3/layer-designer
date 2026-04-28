@@ -48,7 +48,26 @@ Single source of truth. Key sections:
 
 ---
 
-## 3. Model Capability Check
+## 3. API Timeout Guidelines
+
+When invoking `generate_image.py` (or any image generation API), set request timeouts according to quality and resolution to avoid premature failures:
+
+| Quality | Resolution | Safe Timeout |
+|---------|-----------|-----------------|
+| `low` | ≤ 1024×1024 | **150 seconds** |
+| `medium` | ≤ 1024×1024 | 150–180 seconds |
+| `high` | ≤ 1024×1024 | 180-200 seconds |
+| `low` | 2K (e.g. 1792×1024) | 180-200 seconds |
+| `medium` | 2K | 200-250 seconds |
+| `high` | 2K+ (e.g. 2048×2048, 4K) | **300+ seconds** |
+
+**Rule of thumb**: Add ~100s for each quality tier step (low → medium → high) and ~100s for each resolution doubling (1K → 2K → 4K).
+
+**Implementation**: Pass timeout via your HTTP client or async task poller configuration. For `generate_image.py` async mode, set `poll_interval` and `timeout` in `config.json` under `api.{provider}.async_config`.
+
+---
+
+## 4. Model Capability Check
 
 | Capability | Requirement | Default |
 |-----------|-------------|---------|
@@ -60,7 +79,7 @@ If the agent's native image model supports image-to-image editing with transpare
 
 ---
 
-## 4. Input Modes
+## 5. Input Modes
 
 | Mode | Description | When to Use |
 |------|-------------|-------------|
@@ -71,7 +90,7 @@ In reference-image mode, save the uploaded image to `01-requirements/references/
 
 ---
 
-## 5. Model Size Constraints (HARD — 502 if violated)
+## 6. Model Size Constraints (HARD — 502 if violated)
 
 - **Max edge**: ≤ 3840px
 - **Alignment**: Both edges must be multiples of 16
@@ -85,7 +104,7 @@ On invalid sizes: present violations + suggested nearest compliant size, ask use
 
 ---
 
-## 6. Workflow Overview
+## 7. Workflow Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -145,23 +164,43 @@ On invalid sizes: present violations + suggested nearest compliant size, ask use
 
 ---
 
-## 7. Fast Track Mode
+## 8. Preview Quality Modes
 
-| Feature | Standard Mode | Fast Track |
-|--------|---------------|------------|
+Two independent choices at Phase 1:
+
+### 8.1 Preview Quality (affects early_size and generation quality)
+
+| Feature | Standard Preview | High-Quality Preview |
+|--------|-----------------|---------------------|
+| `downsize_ratio` | 0.5 | 0.775 |
+| Early-phase area | ~25–40% of full | ~60% of full |
+| Preview quality | `low` | `medium` |
+| Generation speed | Fast (~150s for 1K) | Slower (~250s for 1K) |
+| Token/cost | Lower | ~2× |
+| Best For | Iterative exploration, quick drafts | Detail-critical designs, text-heavy UIs, fine textures |
+
+**How to choose**: At Phase 1 Step 2, ask the user:
+> "请选择预览质量模式：标准预览（默认，更快更省）或高质量预览（保留约 60% 面积细节，质量 medium）？"
+
+### 8.2 Fast Track Mode (affects workflow steps, independent of quality)
+
+| Feature | Standard Workflow | Fast Track |
+|--------|-------------------|------------|
 | Previews | 3 options | 1 option |
 | Revisions | Unlimited | Unlimited |
 | Phase 2 | Separate phase | Merged into Phase 1 Step 9 |
-| Quality | Full detail | Simplified details |
+| Detail level | Full detail | Simplified details |
 | OK Checkpoints | 2 (Phase 1 + Phase 2) | 1 (after preview) |
 | Best For | New designs | Quick iterations / known assets |
 
-**How to choose**: At Phase 1 Step 4, ask the user:
-> "Standard Mode (3 previews, full quality) or Fast Track Mode (1 preview, simplified details)?"
+**How to choose**: At Phase 1 Step 2, ask the user:
+> "是否启用快速通道？（是/否）" — 启用后 Phase 1~2 合并，只需确认 1 张预览即可进入分层阶段。
+
+**Modes can be combined**: High-Quality + Fast Track = 1 high-quality preview, then straight to layer generation. Standard + Standard Workflow = 3 low-quality previews, then separate Phase 2 confirmation.
 
 ---
 
-## 8. Iteration Limits
+## 9. Iteration Limits
 
 | Phase | Max Iterations | Configurable |
 |-------|---------------|-------------|
@@ -171,7 +210,7 @@ On invalid sizes: present violations + suggested nearest compliant size, ask use
 
 ---
 
-## 9. Phase-by-Phase Reference Documents
+## 10. Phase-by-Phase Reference Documents
 
 **MANDATORY RULE**: When entering any phase, read the corresponding phase document from `references/` before executing any steps.
 
@@ -190,7 +229,7 @@ On invalid sizes: present violations + suggested nearest compliant size, ask use
 
 ---
 
-## 10. Key Rules
+## 11. Key Rules
 
 1. **Invoke scripts, don't reimplement**: If a script exists, the agent MUST call it and not duplicate logic inline.
 2. **Size validation is mandatory for EVERY generation**:
@@ -218,7 +257,7 @@ On invalid sizes: present violations + suggested nearest compliant size, ask use
 
 ---
 
-## 11. Additional References
+## 12. Additional References
 
 - Setup & Installation: [`references/setup-guide.md`](references/setup-guide.md)
 - Incremental Update Mode: [`references/incremental-update.md`](references/incremental-update.md)

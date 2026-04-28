@@ -112,5 +112,13 @@
     "alpha_matting_foreground_threshold": 240,
     "alpha_matting_background_threshold": 10,
     "alpha_matting_erode_size": 10
+  },
+  "detection": {
+    "warn_offset_threshold": 0.30,
+    "ssd_confidence_threshold": 20000.0,
+    "roi_factor": 3.5,
+    "search_scales": [0.65, 0.80, 0.90, 0.95, 1.00, 1.05, 1.15, 1.30],
+    "fine_radius": 12,
+    "downsample": 4
   }
 }

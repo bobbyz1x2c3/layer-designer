@@ -258,6 +258,8 @@ def main():
     parser.add_argument("--project", "-p", help="Project name (to save size_plan.json)")
     parser.add_argument("--width", "-W", type=int, required=True, help="Requested width in pixels")
     parser.add_argument("--height", "-H", type=int, required=True, help="Requested height in pixels")
+    parser.add_argument("--downsize-ratio", "-d", type=float, default=0.5,
+                        help="Early-phase downsize ratio (0.0–1.0). Default 0.5. Use 0.775 for high-quality preview mode (~60% area).")
     args = parser.parse_args()
 
     result = validate_and_plan_size(
@@ -265,6 +267,7 @@ def main():
         height=args.height,
         project_name=args.project,
         config_path=args.config,
+        downsize_ratio=args.downsize_ratio,
     )
 
     print(format_output(result))
