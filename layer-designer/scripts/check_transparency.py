@@ -200,46 +200,67 @@ def remove_background(image_path: str, output_path: str, matting_config: dict | 
         return result.crop((crop_x, crop_y, crop_x + w, crop_y + h))
 
     # --- Stage 1: Normal matting ---
-    result = _matte(original_img)
-    transparent_count = _count_transparent(result)
-    transparent_ratio = transparent_count / total_pixels
-    stage1_ratio = transparent_ratio
+    result_stage1 = _matte(original_img)
+    stage1_transparent = _count_transparent(result_stage1)
+    stage1_ratio = stage1_transparent / total_pixels
+    transparent_count = stage1_transparent
+    transparent_ratio = stage1_ratio
     padded = False
     skipped = False
-
-    # --- Stage 2: square padding (long edge +40%) retry if >70% transparent ---
-    if auto_pad and stage1_ratio > 0.70:
-        edge_color, _ = _detect_large_foreground(original_img, stage1_ratio)
-        result = _pad_and_matte_square(original_img, 0.40, edge_color)
-        transparent_count = _count_transparent(result)
-        transparent_ratio = transparent_count / total_pixels
-        padded = True
-
-        # Dynamic threshold coefficient: 1.0 @ 70% -> 1.1 @ 100%
-        # threshold = coefficient - stage1_ratio
-        coefficient = 1.0 + (stage1_ratio - 0.70) / 0.30 * 0.10
-        threshold = coefficient - stage1_ratio
-        if transparent_ratio >= threshold:
-            original_img.save(output_path)
-            transparent_count = 0
-            transparent_ratio = 0.0
-            padded = False
-            skipped = True
-
-    if not skipped:
-        result.save(output_path)
 
     method_name = f"rembg_{model_name}"
     if alpha_matting:
         method_name += "_alpha_matting"
+
+    # --- Stage 2: square padding (long edge +40%) retry if >85% transparent ---
+    if auto_pad and stage1_ratio > 0.85:
+        edge_color, _ = _detect_large_foreground(original_img, stage1_ratio)
+        result_stage2 = _pad_and_matte_square(original_img, 0.40, edge_color)
+        stage2_transparent = _count_transparent(result_stage2)
+        stage2_ratio = stage2_transparent / total_pixels
+        padded = True
+
+        # Save both stage results for manual inspection
+        base_path = Path(output_path).with_suffix("")
+        stage1_path = str(base_path) + "_stage1.png"
+        stage2_path = str(base_path) + "_stage2.png"
+        result_stage1.save(stage1_path)
+        result_stage2.save(stage2_path)
+
+        # Default output: stage1 result (preserves downstream compatibility)
+        result_stage1.save(output_path)
+
+        return {
+            "success": True,
+            "method": method_name,
+            "warning": (
+                f"High transparent ratio detected (stage1={stage1_ratio:.2%}). "
+                f"Both stage1 ({stage1_ratio:.2%} transparent) and stage2 ({stage2_ratio:.2%} transparent) "
+                f"matte results saved. Please manually inspect and choose the better output. "
+                f"Stage1: {stage1_path} | Stage2: {stage2_path}"
+            ),
+            "stage1_ratio": round(stage1_ratio, 4),
+            "stage2_ratio": round(stage2_ratio, 4),
+            "output_path": output_path,
+            "stage1_path": stage1_path,
+            "stage2_path": stage2_path,
+            "padded": True,
+            "skipped": False,
+            "transparent_pixels": stage1_transparent,
+            "transparent_ratio": round(stage1_ratio, 4),
+        }
+
+    # Normal path: save stage1 result directly
+    result_stage1.save(output_path)
+
     return {
         "success": True,
         "method": method_name,
-        "transparent_pixels": transparent_count,
+        "transparent_pixels": stage1_transparent,
         "output_path": output_path,
-        "padded": padded,
-        "skipped": skipped,
-        "transparent_ratio": round(transparent_count / total_pixels, 4),
+        "padded": False,
+        "skipped": False,
+        "transparent_ratio": round(stage1_ratio, 4),
     }
 
 
@@ -315,70 +336,21 @@ def check_transparency(image_path: str, threshold: int = 10, sample_rate: float 
         return result
 
     # ------------------------------------------------------------------
-    # Strategy 2: RGB/L/P mode — detect solid light background
+    # Strategy 2: RGB/L/P mode — no background color detection.
+    # We skip the unreliable light/uniform heuristics (proven to fail on
+    # dark backgrounds and large foregrounds) and always recommend rembg.
     # ------------------------------------------------------------------
-    sample_count = min(2000, width * height)
-    sampled = _sample_pixels(img, sample_count)
-
-    if img.mode == "L":
-        light_count = sum(1 for v in sampled if v > 240)
-        uniform_count = 0
-        if len(sampled) > 1:
-            avg = sum(sampled) / len(sampled)
-            uniform_count = sum(1 for v in sampled if abs(v - avg) < 10)
-        has_transparency = (light_count / len(sampled) > 0.5) or (uniform_count / len(sampled) > 0.6)
+    if img.mode in ("L", "RGB", "P"):
         return {
-            "has_transparency": has_transparency,
-            "light_pixels": light_count,
-            "sampled_pixels": len(sampled),
+            "has_transparency": False,
             "width": width,
             "height": height,
             "mode": original_mode,
             "format": "PNG",
-            "detection_method": "solid_background_fallback",
-            "note": "Image is grayscale; detected solid light background as transparent",
+            "detection_method": "no_alpha",
+            "recommend_matte": True,
+            "message": "Image has no alpha channel. Use --remove-bg to auto-remove background via rembg.",
         }
-
-    if img.mode in ("RGB", "P"):
-        light_count = 0
-        uniform_count = 0
-        if sampled:
-            avg_r = sum(p[0] for p in sampled) / len(sampled)
-            avg_g = sum(p[1] for p in sampled) / len(sampled)
-            avg_b = sum(p[2] for p in sampled) / len(sampled)
-
-            for r, g, b in sampled:
-                if r > 200 and g > 200 and b > 200:
-                    light_count += 1
-                if (abs(r - avg_r) < 15 and abs(g - avg_g) < 15 and abs(b - avg_b) < 15):
-                    uniform_count += 1
-
-        light_ratio = light_count / len(sampled) if sampled else 0
-        uniform_ratio = uniform_count / len(sampled) if sampled else 0
-        has_transparency = light_ratio > 0.5 or uniform_ratio > 0.6
-
-        result = {
-            "has_transparency": has_transparency,
-            "light_pixels": light_count,
-            "uniform_pixels": uniform_count,
-            "sampled_pixels": len(sampled),
-            "light_ratio": round(light_ratio, 4),
-            "uniform_ratio": round(uniform_ratio, 4),
-            "width": width,
-            "height": height,
-            "mode": original_mode,
-            "format": "PNG",
-            "detection_method": "solid_background_fallback",
-            "note": "Image has no alpha channel; detected solid light background as transparent" if has_transparency else "No alpha and no uniform light background detected",
-        }
-        if not has_transparency:
-            result["recommend_matte"] = False
-            result["message"] = "Image has no alpha channel and no uniform light background detected. Cannot auto-remove background."
-        else:
-            # Solid background detected but no real alpha — recommend matte
-            result["recommend_matte"] = True
-            result["message"] = "Image has no real alpha channel, but a solid light-colored background was detected. Use --remove-bg to auto-remove it via U²Net model."
-        return result
 
     return {
         "has_transparency": False,
@@ -478,9 +450,9 @@ def main():
 
     print(json.dumps(result, indent=2))
 
-    if result.get("error") and not result.get("has_transparency"):
+    if result.get("error") and not result.get("has_transparency") and not result.get("recommend_matte"):
         sys.exit(1)
-    sys.exit(0 if result["has_transparency"] else 1)
+    sys.exit(0 if result["has_transparency"] or result.get("recommend_matte") else 1)
 
 
 if __name__ == "__main__":

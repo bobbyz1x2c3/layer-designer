@@ -362,9 +362,9 @@ class PathManager:
         else:
             candidate_w = max(2, int(width * downsize_ratio))
             candidate_h = max(2, int(height * downsize_ratio))
-            # Round to even numbers (legacy compat)
-            candidate_w = candidate_w if candidate_w % 2 == 0 else candidate_w + 1
-            candidate_h = candidate_h if candidate_h % 2 == 0 else candidate_h + 1
+            # Align to model's alignment requirement (e.g. 16 for gpt-image-2)
+            candidate_w = ((candidate_w + align - 1) // align) * align
+            candidate_h = ((candidate_h + align - 1) // align) * align
 
         # Step 2: Check compliance
         if PathManager.is_size_compliant(
@@ -374,10 +374,9 @@ class PathManager:
         ):
             return candidate_w, candidate_h
 
-        # Step 3: Find smallest compliant size preserving ratio
-        # Use the original ratio, not the downscaled ratio
+        # Step 3: Find smallest compliant size preserving the downscaled ratio
         compliant_w, compliant_h = PathManager.compute_compliant_size(
-            width, height,
+            candidate_w, candidate_h,
             max_edge=max_edge, align=align, max_ratio=max_ratio,
             min_pixels=min_pixels, max_pixels=max_pixels,
         )

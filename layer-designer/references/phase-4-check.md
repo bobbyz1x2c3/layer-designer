@@ -50,6 +50,26 @@ The API endpoint currently outputs RGB mode PNGs (no real alpha channel). When `
 
 5. **If user declines**: Skip this layer (treat as opaque) or return to Phase 3 to regenerate.
 
+### Post-matte auto-crop for all non-background layers
+
+After all layers have been matted (step 2 above), **run auto-crop on every non-background layer**:
+
+```bash
+python scripts/crop_to_content.py \
+  --input {matte_path} --output {cropped_path} --padding 4
+```
+
+- `{matte_path}`: the rembg output from step 2 (e.g. `{layer_name}_matte.png`)
+- `{cropped_path}`: `{layer_dir}/{layer_name}_cropped.png`
+- `--padding 4`: leaves a small 4px transparent margin around the element for clean edge compositing
+- This runs **after** rembg because `crop_to_content` needs a reliable alpha channel to detect content bounds. Cropping before matting is unreliable.
+- Layers whose content already fills the entire canvas will keep their original size (bbox equals full image) — no harm done.
+- Replace the matte version with the cropped version in `enhanced_layer_plan.json` source paths.
+
+**Why uniform cropping**: The updated Phase 3 prompt instructs the model to leave a 3-5% transparent margin around the element. After rembg, this margin becomes transparent padding that should be trimmed for tighter compositing.
+
+**`extreme_ratio` layers**: Layers flagged with `extreme_ratio: true` in `layer_plan.json` are also cropped here. The flag is preserved for informational purposes (e.g. debugging aspect ratio issues) but no longer triggers a separate crop path.
+
 **Note**: The `--remove-bg` flag now always triggers rembg when explicitly passed, regardless of detection result. This is a best-effort optimization — even if no solid background was detected, rembg may still produce usable results. True RGBA images with alpha==0 pixels are not re-processed (they already have transparency).
 
 **Auto-padding for large-foreground layers**: When a UI control occupies most of the image (e.g., a full-width banner or large panel), rembg may misclassify the foreground as background. `check_transparency.py` automatically detects this condition (foreground > 70% of pixels) and adds temporary padding before matting, then crops back to the original size. The JSON output includes `"padded": true` when this happens. Use `--pad` to force padding, or `--no-pad` to disable it.

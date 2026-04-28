@@ -50,7 +50,7 @@ For each layer identified in `layer_plan.json`, in the documented stacking order
    - Base: `Extract ONLY the {layer_name}. {description}.`
    - **If `opacity` < 1.0 (semi-transparent layer in the full design)**: append color purity guidance:
      > "This element sits on top of a background in the full design. When extracting it, preserve the element's own intrinsic colors and texture cleanly — do NOT blend background colors into the element. The element should retain its intended solid appearance with pure, unmixed colors."
-   - Always append: `Transparent background, PNG with alpha channel, only this element isolated. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fill the entire canvas. The element should occupy the maximum possible area while preserving its exact original proportions.`
+   - Always append: `Transparent background, PNG with alpha channel, only this element isolated. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fit within the canvas while leaving a small transparent margin of approximately 3-5% on each side. Do NOT let the element touch or overlap the canvas boundary. This margin ensures clean background removal in post-processing.`
 
 5. Generate isolated layer:
 
@@ -71,11 +71,8 @@ python scripts/generate_image.py edit \
 **Extreme-ratio layer handling**:
 - If `PathManager.is_extreme_ratio(layout.width, layout.height)` returns `True` (original ratio > model's `max_ratio`, e.g. > 3:1), the compliant canvas will be clamped to a different aspect ratio.
 - The existing prompt already instructs the model to "STRICTLY maintain the element's original aspect ratio", so the element should remain proportionally correct inside the canvas.
-- After generation and rembg, the layer image will have transparent padding on the shorter sides. **Agent MUST run auto-crop** to trim this padding:
-  ```bash
-  python scripts/check_transparency.py --config config.json --image {layer_path} --remove-bg --auto-crop --output {layer_path}
-  ```
-  This produces an additional `{layer_name}_cropped.png` with the element tightly cropped to its content bounding box.
+- After generation, the layer image will have transparent padding on the shorter sides. **Do NOT auto-crop in Phase 3** — the element is not yet matted and the alpha channel may be unreliable.
+- Instead, **record the `extreme_ratio: true` flag in `layer_plan.json`** for this layer. Phase 4 will handle auto-cropping **after** rembg produces a clean alpha channel.
 - `generate_preview.py` automatically prefers `*_cropped.png` when available, so Phase 4 preview will show the element at its true proportions.
 
 **Background layer exception**:

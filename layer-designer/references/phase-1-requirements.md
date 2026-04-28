@@ -58,9 +58,10 @@ When the user first invokes this skill, send a structured onboarding message. Do
    如果有线框图、手绘草图、竞品截图或现有 UI 截图，请上传
    → 我会基于参考图生成预览（图生图模式），更贴近你的预期
 
-6. 快速模式：
-   是否启用快速通道？启用后 Phase 1~2 合并，只需确认 1 张预览即可进入分层阶段
-   默认：关闭（标准 8 阶段流程）
+6. 预览质量模式：
+   - **标准预览**（默认）：early_size ≈ 25–40% 面积，quality = low，成本低、速度快
+   - **高质量预览**：early_size ≈ 60% 面积，quality = medium，细节更丰富，适合对精细度要求高的设计
+   - **快速通道**：启用后 Phase 1~2 合并，只需确认 1 张预览即可进入分层阶段（默认关闭）
 ━━━━━━━━━━━━━━━━━━━━
 
 你可以逐项回复，也可以一次性提供所有信息。收到后我会立即开始工作。
@@ -79,7 +80,16 @@ Gather the following from the user's response. Use clarifying questions if any i
 | 3 | **Visual style** | Recommended | "你希望是什么视觉风格？可以发参考图给我。" |
 | 4 | **Design spec / rules** | Optional | — |
 | 5 | **Reference image** | Optional | — |
-| 6 | **Fast workflow** | Optional (default: off) | "是否启用快速模式？（是/否）" |
+| 6 | **Preview quality mode** | Optional (default: standard) | "请选择预览质量模式：标准预览（默认）或高质量预览？" |
+| 7 | **Fast workflow** | Optional (default: off) | "是否启用快速通道？（是/否）" |
+
+**Determine preview quality mode**:
+- User says "高质量" / "high quality" / "细节丰富" → High-Quality Preview mode
+  - `downsize_ratio = 0.775` (~60% area for early_size)
+  - Preview generation `quality = medium`
+- No response or "标准" / "standard" / "默认" → Standard mode
+  - `downsize_ratio = 0.5` (~25% area for early_size)
+  - Preview generation `quality = low`
 
 **Determine input mode** based on whether a reference image was provided:
 - **No reference image** → `text-to-image` mode (default)
@@ -140,24 +150,33 @@ After validation succeeds, read `01-requirements/size_plan.json` to obtain:
 - `early_size`: reduced dimensions for Phase 1~4
 
 **Early-phase size logic** (handled automatically by `validate_size.py`):
-- If `downsize_early_phases` is enabled and target is not tiny: the script computes a downscaled size (typically 0.5×)
+- If `downsize_early_phases` is enabled and target is not tiny: the script computes a downscaled size based on the selected preview quality mode
 - If the downscaled size violates model constraints (e.g., below min pixels), the script finds the **smallest compliant size** that preserves aspect ratio
 - If target is tiny (`W < 300` or `H < 200` or `W×H < 60000`): no downsize is applied
 
-**Example sizes**:
-| User Request | Full Size (Phase 5~8) | Early Size (Phase 1~4) | Notes |
-|-------------|----------------------|-----------------------|-------|
-| 1920 × 1080 | 1920 × 1080 | 1088 × 608 | Downsize 0.5× = 960×540 violates min pixels → adjusted to 1088×608 |
-| 1024 × 1024 | 1024 × 1024 | 816 × 816 | Downsize 0.5× = 512×512 violates min pixels → adjusted to 816×816 |
-| 3840 × 2160 | 3840 × 2160 | 1920 × 1080 | Downsize 0.5× is compliant → used directly |
+**Preview quality mode differences**:
+
+| Mode | downsize_ratio | Preview quality | When to use |
+|------|---------------|-----------------|-------------|
+| **Standard** | 0.5 | `low` | Default. Faster, lower cost. Good for iterative exploration. |
+| **High-Quality** | 0.775 | `medium` | When fine details matter. ~60% area retains more texture, text legibility, and element sharpness. Costs ~2× tokens/time. |
+
+**Example sizes (Standard vs High-Quality)**:
+| User Request | Full Size | Standard Early | High-Quality Early | Notes |
+|-------------|-----------|---------------|-------------------|-------|
+| 1920 × 1080 | 1920 × 1080 | 1088 × 608 | 1392 × 784 | HQ preserves ~60% area vs ~38% |
+| 1024 × 1024 | 1024 × 1024 | 816 × 816 | 1024 × 1024 | 0.775× = 784×784 < min_pixels → falls back to full size |
+| 3840 × 2160 | 3840 × 2160 | 1920 × 1080 | 2960 × 1664 | HQ retains significantly more detail |
 
 ---
 
 ## Step 5: Generate Preview Candidates
 
-**Standard mode**: Generate **3 preview images** using the `early_size` from Step 4. Quality: `low` or `medium`.
+**Standard mode**: Generate **3 preview images** using the `early_size` from Step 4.
+- Standard preview quality: `low`
+- High-quality preview quality: `medium`
 
-**Fast Track mode**: Generate **1 preview image** only. Same parameters.
+**Fast Track mode**: Generate **1 preview image** only. Same quality rules.
 
 ---
 
@@ -167,7 +186,7 @@ After validation succeeds, read `01-requirements/size_plan.json` to obtain:
 python scripts/generate_image.py generate \
   --config config.json \
   --prompt "{overall composition + style + key elements}" \
-  --output {preview_path} --size {early_w}x{early_h} --quality low
+  --output {preview_path} --size {early_w}x{early_h} --quality {preview_quality}
 ```
 
 - **Standard**: Invoke 3 times (or once with `--n 3` if API supports it)
@@ -185,7 +204,7 @@ python scripts/generate_image.py edit \
   --config config.json \
   --image {reference_image_path} \
   --prompt "{reference interpretation + refinement prompt}" \
-  --output {preview_path} --size {early_w}x{early_h} --quality low
+  --output {preview_path} --size {early_w}x{early_h} --quality {preview_quality}
 ```
 
 - **Standard**: Invoke 3 times
@@ -220,7 +239,7 @@ If user requests changes (NOT "OK"):
      --config config.json \
      --image {selected_preview_path} \
      --prompt "Based on this UI design, modify: {user's change requests}. Keep the overall layout and style consistent. {style_anchor if already extracted}." \
-     --output {revised_preview_path} --size {early_w}x{early_h} --quality low
+     --output {revised_preview_path} --size {early_w}x{early_h} --quality {preview_quality}
    ```
    - **Default**: Use the selected preview as base
    - **Major structural changes only**: May use the original reference image as base instead
@@ -246,7 +265,7 @@ If user requests changes (NOT "OK"):
      --config config.json \
      --image {confirmed_preview_path} \
      --prompt "Based on this UI design, modify: {user's change requests}. Keep the overall layout and style consistent. {style_anchor}." \
-     --output {revised_preview_path} --size {early_w}x{early_h} --quality low
+     --output {revised_preview_path} --size {early_w}x{early_h} --quality {preview_quality}
    ```
 3. Present the revised preview and ask for confirmation
 4. In fast track, revisions are unlimited. If user repeatedly asks for major changes, suggest switching to standard mode.

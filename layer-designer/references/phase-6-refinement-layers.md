@@ -67,7 +67,7 @@ For each layer, **preserving the same stacking order from Phase 3**:
 python scripts/generate_image.py edit \
   --config config.json \
   --image {high_quality_preview} \
-  --prompt "Extract ONLY the {layer_name}. {description}. High quality, polished, transparent background, isolated element. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fill the entire canvas. The element should occupy the maximum possible area while preserving its exact original proportions." \
+  --prompt "Extract ONLY the {layer_name}. {description}. High quality, polished, transparent background, isolated element. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fit within the canvas while leaving a small transparent margin of approximately 3-5% on each side. Do NOT let the element touch or overlap the canvas boundary. This margin ensures clean background removal in post-processing." \
   --output {final_layer_path} --size {layer_w}x{layer_h} --quality {tier}
 ```
 
