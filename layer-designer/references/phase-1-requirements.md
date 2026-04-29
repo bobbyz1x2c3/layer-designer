@@ -391,7 +391,15 @@ For each layer, visually judge whether it should be **semi-transparent** when st
 
 4. **Detect repeat patterns** (same as Standard Mode Phase 2 Step 5):
    - Inspect the confirmed preview for grid/list patterns
-   - If detected, present to user and ask for confirmation before applying `repeat_mode`
+   - **Panel / carrier detection**: When repeat patterns are detected, also check whether the grid/list has a **carrier panel** — a visible container that holds the repeating elements, including:
+     - Background shape (rounded rectangle, card, bar, pill)
+     - Texture or pattern fill on that shape
+     - Decorative borders, outlines, or ornamental framing
+     - Drop shadow, inner glow, or ambient occlusion around the container
+     - Any visual element that is **shared across all cells** and **positioned beneath them**
+   - If a carrier panel exists → include `auto_panel: {enabled: true, ...}` in `repeat_config`
+   - If cells float directly on the main background with no shared container → omit `auto_panel`
+   - If uncertain → ask user: "检测到重复布局，该区域的子项是否共享一个容器面板（底板/卡片/条）？"
    - If user confirmed in Phase 1 Step 2 ("是否有大量重复元素"), use that as a hint but still verify visually
 
 5. **Present the layer plan to the user** (informational only, for transparency):

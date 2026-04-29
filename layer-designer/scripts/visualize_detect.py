@@ -14,6 +14,8 @@ def main():
     parser.add_argument("--preview", default=None, help="Preview image path")
     parser.add_argument("--input", "-i", default=None, help="Detected layouts JSON path (default: 04-check/detected_layouts.json)")
     parser.add_argument("--output", "-o", default=None, help="Output visualization path")
+    parser.add_argument("--layer", "-l", action="append", default=None,
+                        help="Visualize only specific layer(s) by id or name. Can be used multiple times.")
     args = parser.parse_args()
 
     proj = args.project
@@ -34,7 +36,15 @@ def main():
     with open(detected_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    # Normalize filter for case-insensitive matching
+    filter_set = None
+    if args.layer:
+        filter_set = {f.lower() for f in args.layer}
+
     for layer_id, result in data["layers"].items():
+        if filter_set and layer_id.lower() not in filter_set:
+            continue
+
         planned = result["planned"]
         detected = result["detected"]
 

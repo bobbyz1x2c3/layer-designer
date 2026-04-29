@@ -290,12 +290,16 @@ def detect_layer(
     downsample: int = 4,
     fine_radius: int = 12,
     opacity: float = 1.0,
+    force: bool = False,
 ) -> dict:
     """Detect a single layer's position via multi-scale template matching.
 
     Semitransparent layers (opacity < 0.85) are skipped because the preview
     shows a blended color (foreground + background) while the extracted
     layer is opaque, making pixel-level matching unreliable.
+
+    Use ``force=True`` to bypass the opacity safety check (user explicitly
+    requests detection on a semitransparent layer).
     """
     import math
     import time
@@ -307,7 +311,7 @@ def detect_layer(
     ph = planned_layout.get("height", canvas_h)
 
     # Skip semitransparent layers — template vs preview color mismatch
-    if opacity < 0.85:
+    if not force and opacity < 0.85:
         return {
             "detected": {"x": px, "y": py, "width": pw, "height": ph},
             "planned": {"x": px, "y": py, "width": pw, "height": ph},
@@ -497,14 +501,18 @@ def detect_layer(
     }
 
 
-def detect_all_layers(
+def _prepare_detection(
     project_name: str,
     preview_path: str,
-    phase: str = "rough",
+    phase: str,
     config_path: str | None = None,
     scales: list[float] | None = None,
 ) -> dict:
-    """Run detection for all non-background layers."""
+    """Prepare shared resources for layer position detection.
+
+    Returns a context dict with all common data needed by both single-layer
+    and multi-layer detection.
+    """
     pm = PathManager(project_name, config_path=config_path)
     det_cfg = _get_detection_config(config_path)
 
@@ -512,7 +520,6 @@ def detect_all_layers(
     layer_plan_path = pm.get_layer_plan_path()
     if not layer_plan_path.exists():
         raise FileNotFoundError(f"layer_plan.json not found: {layer_plan_path}")
-
     with open(layer_plan_path, "r", encoding="utf-8") as f:
         layer_plan = json.load(f)
 
@@ -560,95 +567,180 @@ def detect_all_layers(
     ssd_threshold = det_cfg.get("ssd_confidence_threshold", 20000.0)
     downsample = det_cfg.get("downsample", 4)
     fine_radius = det_cfg.get("fine_radius", 12)
-    results = {}
 
+    return {
+        "pm": pm,
+        "layer_plan": layer_plan,
+        "preview_rgb": preview_rgb,
+        "canvas_w": canvas_w,
+        "canvas_h": canvas_h,
+        "scale_x": scale_x,
+        "scale_y": scale_y,
+        "layout_scale_x": layout_scale_x,
+        "layout_scale_y": layout_scale_y,
+        "layer_root": layer_root,
+        "scales": scales,
+        "roi_factor": roi_factor,
+        "ssd_threshold": ssd_threshold,
+        "downsample": downsample,
+        "fine_radius": fine_radius,
+    }
+
+
+def _resolve_layer(
+    layer_info: dict,
+    context: dict,
+    force: bool = False,
+) -> tuple[str, Path | None, dict, float, str | None] | None:
+    """Resolve a single layer for detection.
+
+    Returns (layer_id, png_path, planned_layout, opacity, skip_reason) or None.
+    - skip_reason is a string if this layer should not be template-matched
+      (background, repeat, missing PNG, etc.). png_path will be None.
+    - skip_reason is None for detectable layers.
+    - Returns None if the layer has no valid id/name.
+
+    Use ``force=True`` to bypass background/repeat safety checks.
+    """
+    layer_id = layer_info.get("id", "") or layer_info.get("name", "")
+    if not layer_id:
+        return None
+
+    canvas_w = context["canvas_w"]
+    canvas_h = context["canvas_h"]
+    scale_x = context["scale_x"]
+    scale_y = context["scale_y"]
+    layout_scale_x = context["layout_scale_x"]
+    layout_scale_y = context["layout_scale_y"]
+
+    # Compute planned layout (needed for all layers, even skipped ones)
+    raw_planned = layer_info.get("layout", {})
+    planned = {
+        "x": int(round(raw_planned.get("x", 0) * layout_scale_x * scale_x)),
+        "y": int(round(raw_planned.get("y", 0) * layout_scale_y * scale_y)),
+        "width": int(round(raw_planned.get("width", canvas_w) * layout_scale_x * scale_x)),
+        "height": int(round(raw_planned.get("height", canvas_h) * layout_scale_y * scale_y)),
+    }
+
+    # Background layers are not matched (unless forced)
+    if not force and layer_info.get("is_background", False):
+        return layer_id, None, planned, 1.0, "background"
+
+    # Repeat-related layers are not matched (unless forced)
+    repeat_mode = layer_info.get("repeat_mode")
+    is_repeat = (
+        repeat_mode in ("grid", "list")
+        or layer_info.get("is_repeat_instance", False)
+        or layer_info.get("is_repeat_parent", False)
+        or layer_info.get("is_repeat_panel", False)
+    )
+    if not force and is_repeat:
+        reason = f"repeat_mode={repeat_mode}" if repeat_mode else "repeat-related"
+        return layer_id, None, planned, 1.0, reason
+
+    layer_root = context["layer_root"]
+    layer_dir = layer_root / layer_id
+    if not layer_dir.exists():
+        return layer_id, None, planned, 1.0, "directory_not_found"
+
+    # Select PNG using same logic as Phase 4 generate_preview.py
+    png_files = sorted(layer_dir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+    png_path = None
+    for p in png_files:
+        if p.stem.endswith("_cropped"):
+            png_path = p
+            break
+    if png_path is None:
+        candidates = [p for p in png_files
+                      if not p.stem.endswith("_raw")
+                      and not p.stem.endswith("_stage1")
+                      and not p.stem.endswith("_stage2")]
+        png_path = candidates[0] if candidates else (png_files[0] if png_files else None)
+
+    if png_path is None:
+        return layer_id, None, planned, 1.0, "no_png_found"
+
+    opacity = layer_info.get("opacity", 1.0)
+    return layer_id, png_path, planned, opacity, None
+
+
+def detect_all_layers(
+    project_name: str,
+    preview_path: str,
+    phase: str = "rough",
+    config_path: str | None = None,
+    scales: list[float] | None = None,
+    layer_filter: list[str] | None = None,
+    force: bool = False,
+) -> dict:
+    """Run detection for selected layers.
+
+    Args:
+        layer_filter: If provided, only detect layers whose id or name matches
+                      (case-insensitive). Supports both id and display name.
+        force: If True, bypass opacity/background/repeat safety checks.
+               Use only when the user explicitly requests detection on
+               layers that would normally be skipped.
+    """
+    context = _prepare_detection(project_name, preview_path, phase, config_path, scales)
+    layer_plan = context["layer_plan"]
+
+    results = {}
     layers = layer_plan.get("layers", [])
+
+    # Normalize filter for case-insensitive matching
+    filter_set = None
+    if layer_filter:
+        filter_set = {f.lower() for f in layer_filter}
+
     for layer_info in layers:
-        if layer_info.get("is_background", False):
+        layer_id = layer_info.get("id", "") or layer_info.get("name", "")
+
+        # Apply filter if specified
+        if filter_set and layer_id.lower() not in filter_set:
             continue
 
-        # Skip ALL repeat-related layers — grid/list structures are not suitable
-        # for template matching because:
-        #   - instances: preview-only clones, reuse parent PNG
-        #   - parent: one element of a grid, matching a single cell against the
-        #     entire grid area is unreliable
-        #   - panel: container background, usually a simple rectangle with little
-        #     distinctive texture for precise positioning
-        repeat_mode = layer_info.get("repeat_mode")
-        is_repeat = (
-            repeat_mode in ("grid", "list")
-            or layer_info.get("is_repeat_instance", False)
-            or layer_info.get("is_repeat_parent", False)
-            or layer_info.get("is_repeat_panel", False)
-        )
-        if is_repeat:
-            layer_id = layer_info.get("id", "") or layer_info.get("name", "")
-            raw_planned = layer_info.get("layout", {})
-            planned = {
-                "x": int(round(raw_planned.get("x", 0) * layout_scale_x * scale_x)),
-                "y": int(round(raw_planned.get("y", 0) * layout_scale_y * scale_y)),
-                "width": int(round(raw_planned.get("width", canvas_w) * layout_scale_x * scale_x)),
-                "height": int(round(raw_planned.get("height", canvas_h) * layout_scale_y * scale_y)),
+        resolved = _resolve_layer(layer_info, context, force=force)
+        if resolved is None:
+            continue
+
+        lid, png_path, planned, opacity, skip_reason = resolved
+
+        if skip_reason:
+            method_map = {
+                "background": "skipped_background",
+                "directory_not_found": "skipped_no_dir",
+                "no_png_found": "skipped_no_png",
             }
-            results[layer_id] = {
+            if skip_reason.startswith("repeat"):
+                method = "skipped_repeat"
+            else:
+                method = method_map.get(skip_reason, "skipped")
+
+            results[lid] = {
                 "detected": planned,
                 "planned": planned,
                 "ssd": 0.0,
                 "scale": 1.0,
-                "method": "skipped_repeat",
-                "reason": f"repeat_mode={repeat_mode}" if repeat_mode else "repeat-related layer",
+                "method": method,
+                "reason": skip_reason,
                 "timing_ms": 0.0,
             }
-            print(f"  [SKIP] {layer_id}: repeat layer (mode={repeat_mode}) — uses planned layout")
+            print(f"  [SKIP] {lid}: {skip_reason}")
             continue
 
-        layer_id = layer_info.get("id", "") or layer_info.get("name", "")
-        if not layer_id:
-            continue
-
-        layer_dir = layer_root / layer_id
-        if not layer_dir.exists():
-            print(f"  [SKIP] {layer_id}: directory not found")
-            continue
-
-        # Select PNG using same logic as Phase 4 generate_preview.py
-        png_files = sorted(layer_dir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
-        png_path = None
-        for p in png_files:
-            if p.stem.endswith("_cropped"):
-                png_path = p
-                break
-        if png_path is None:
-            candidates = [p for p in png_files
-                          if not p.stem.endswith("_raw")
-                          and not p.stem.endswith("_stage1")
-                          and not p.stem.endswith("_stage2")]
-            png_path = candidates[0] if candidates else (png_files[0] if png_files else None)
-
-        if png_path is None:
-            print(f"  [SKIP] {layer_id}: no PNG found")
-            continue
-
-        raw_planned = layer_info.get("layout", {})
-        planned = {
-            "x": int(round(raw_planned.get("x", 0) * layout_scale_x * scale_x)),
-            "y": int(round(raw_planned.get("y", 0) * layout_scale_y * scale_y)),
-            "width": int(round(raw_planned.get("width", canvas_w) * layout_scale_x * scale_x)),
-            "height": int(round(raw_planned.get("height", canvas_h) * layout_scale_y * scale_y)),
-        }
-        print(f"  [DETECT] {layer_id}: {png_path.name} @ planned {planned}")
-
-        layer_opacity = layer_info.get("opacity", 1.0)
+        print(f"  [DETECT] {lid}: {png_path.name} @ planned {planned}")
         result = detect_layer(
-            layer_id, png_path, preview_rgb, planned,
-            canvas_w, canvas_h, scales,
-            roi_factor=roi_factor,
-            ssd_threshold=ssd_threshold,
-            downsample=downsample,
-            fine_radius=fine_radius,
-            opacity=layer_opacity,
+            lid, png_path, context["preview_rgb"], planned,
+            context["canvas_w"], context["canvas_h"], context["scales"],
+            roi_factor=context["roi_factor"],
+            ssd_threshold=context["ssd_threshold"],
+            downsample=context["downsample"],
+            fine_radius=context["fine_radius"],
+            opacity=opacity,
+            force=force,
         )
-        results[layer_id] = result
+        results[lid] = result
         timing = result.get("timing_ms", 0)
         timing_detail = result.get("timing_detail_ms", {})
         print(f"    → {result['method']}: detected={result['detected']}, ssd={result['ssd']}, scale={result['scale']}, time={timing}ms")
@@ -656,13 +748,14 @@ def detect_all_layers(
             print(f"       coarse={timing_detail.get('coarse_screening', 0)}ms, fine={timing_detail.get('fine_matching', 0)}ms, per_scale={timing_detail.get('per_scale', [])}")
 
     total_time = sum(r.get("timing_ms", 0) for r in results.values())
-    print(f"[TOTAL] All layers detection time: {total_time:.1f}ms")
+    matched_count = sum(1 for r in results.values() if r["method"] == "template_match")
+    print(f"[TOTAL] Detection time: {total_time:.1f}ms ({matched_count}/{len(results)} layer(s) matched)")
 
     return {
         "project": project_name,
         "preview_source": preview_path,
-        "canvas_size": {"width": canvas_w, "height": canvas_h},
-        "scales": scales,
+        "canvas_size": {"width": context["canvas_w"], "height": context["canvas_h"]},
+        "scales": context["scales"],
         "layers": results,
     }
 
@@ -675,7 +768,12 @@ def main():
     parser.add_argument("--phase", choices=["rough", "check", "refinement"], default="rough")
     parser.add_argument("--output", "-o", help="Output JSON path (default: 04-check/detected_layouts.json)")
     parser.add_argument("--scales", type=float, nargs="+", default=None,
-                        help="Custom scale factors to try (default: 0.8 0.9 0.95 1.0 1.05 1.1 1.2)")
+                        help="Custom scale factors to try")
+    parser.add_argument("--layer", "-l", action="append", default=None,
+                        help="Detect only specific layer(s) by id or name. Can be used multiple times.")
+    parser.add_argument("--force", action="store_true",
+                        help="Force detection on all requested layers, skipping opacity/background/repeat safety checks. "
+                             "Use only when the user explicitly requests it.")
     args = parser.parse_args()
 
     # Default output path
@@ -685,14 +783,17 @@ def main():
         pm = PathManager(args.project, config_path=args.config)
         output_path = pm.get_phase_dir("check") / "detected_layouts.json"
 
+    filter_msg = f", layers={args.layer}" if args.layer else ", all layers"
     print(f"[DETECT] Project: {args.project}")
     print(f"[DETECT] Preview: {args.preview}")
-    print(f"[DETECT] Phase: {args.phase}")
+    print(f"[DETECT] Phase: {args.phase}{filter_msg}")
     print("-" * 60)
 
     result = detect_all_layers(
         args.project, args.preview, args.phase,
         config_path=args.config, scales=args.scales,
+        layer_filter=args.layer,
+        force=args.force,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -30,14 +30,64 @@ sys.path.insert(0, str(Path(__file__).parent))
 from path_manager import PathManager
 
 
+def _resolve_padding(config: dict) -> tuple[int, int, int, int]:
+    """Resolve padding from config into (top, right, bottom, left).
+
+    Supports:
+    - Single number: padding applies to all 4 sides
+    - Dict with keys: top, right, bottom, left
+    - Missing/None: defaults to 0 for all sides
+    """
+    padding = config.get("padding")
+    if padding is None:
+        return 0, 0, 0, 0
+    if isinstance(padding, (int, float)):
+        p = int(padding)
+        return p, p, p, p
+    return (
+        padding.get("top", 0),
+        padding.get("right", 0),
+        padding.get("bottom", 0),
+        padding.get("left", 0),
+    )
+
+
 def _compute_panel_layout(parent: dict, config: dict) -> dict | None:
-    """Compute the bounding box of the entire repeat area."""
+    """Compute the bounding box of the entire repeat area (panel).
+
+    Priority:
+    1. If auto_panel.layout is explicitly provided, use it directly.
+    2. If area_layout has width/height, use it as the panel boundary.
+    3. Otherwise, auto-calculate from cols/rows/gap or count/direction/gap.
+    """
+    panel_cfg = config.get("auto_panel", {})
+
+    # 1. Manual override: highest priority
+    manual_layout = panel_cfg.get("layout")
+    if manual_layout and all(k in manual_layout for k in ("x", "y", "width", "height")):
+        return {
+            "x": manual_layout["x"],
+            "y": manual_layout["y"],
+            "width": manual_layout["width"],
+            "height": manual_layout["height"],
+        }
+
+    # 2. area_layout with width/height → panel boundary
+    area = config.get("area_layout", {})
+    if area.get("width") is not None and area.get("height") is not None:
+        return {
+            "x": area.get("x", 0),
+            "y": area.get("y", 0),
+            "width": area["width"],
+            "height": area["height"],
+        }
+
+    # 3. Auto-calculate from repeat geometry (legacy fallback)
     repeat_mode = parent.get("repeat_mode", "none")
     parent_layout = parent.get("layout", {})
     cell_w = parent_layout.get("width", 100)
     cell_h = parent_layout.get("height", 100)
 
-    area = config.get("area_layout", {})
     start_x = area.get("x", parent_layout.get("x", 0))
     start_y = area.get("y", parent_layout.get("y", 0))
 
@@ -98,11 +148,20 @@ def _build_instances(parent: dict, config: dict) -> list[dict]:
     cell_w = parent_layout.get("width", 100)
     cell_h = parent_layout.get("height", 100)
     area = config.get("area_layout", {})
-    start_x = area.get("x", parent_layout.get("x", 0))
-    start_y = area.get("y", parent_layout.get("y", 0))
+    pt, pr, pb, pl = _resolve_padding(config)
     repeat_mode = parent.get("repeat_mode", "none")
     parent_id = parent.get("id", parent.get("name", "unknown"))
     parent_name = parent.get("name", parent_id)
+
+    # Determine cell start position
+    # If area_layout has width/height, it's a panel boundary; apply padding offset.
+    # Otherwise (legacy), area_layout.x/y is the direct cell start.
+    if area.get("width") is not None and area.get("height") is not None:
+        start_x = area.get("x", parent_layout.get("x", 0)) + pl
+        start_y = area.get("y", parent_layout.get("y", 0)) + pt
+    else:
+        start_x = area.get("x", parent_layout.get("x", 0))
+        start_y = area.get("y", parent_layout.get("y", 0))
 
     instances = []
 

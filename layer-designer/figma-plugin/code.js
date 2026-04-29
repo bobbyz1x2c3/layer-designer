@@ -132,6 +132,73 @@ async function createLayerNode(layer, images) {
 }
 
 /**
+ * Resolve padding from repeat config (number or object).
+ */
+function resolvePadding(config) {
+  const p = config.padding;
+  if (p !== undefined && p !== null) {
+    if (typeof p === 'object') {
+      return {
+        top: p.top || 0,
+        right: p.right || 0,
+        bottom: p.bottom || 0,
+        left: p.left || 0
+      };
+    }
+    const v = parseInt(p) || 0;
+    return { top: v, right: v, bottom: v, left: v };
+  }
+  return { top: 0, right: 0, bottom: 0, left: 0 };
+}
+
+/**
+ * Compute an instance's position relative to its repeat container based on config.
+ * Needed because auto-layout manages positions in Figma, but round-trip needs relative coords.
+ */
+function getInstanceRelativePosition(instanceNode) {
+  let container = instanceNode.parent;
+  while (container) {
+    if (container.getPluginData && container.getPluginData('repeatGroup') === 'true') break;
+    container = container.parent;
+  }
+  if (!container) return { x: 0, y: 0 };
+
+  const configStr = container.getPluginData('repeatConfig');
+  const cellLayoutStr = container.getPluginData('parentLayerLayout');
+  if (!configStr || !cellLayoutStr) return { x: 0, y: 0 };
+
+  let config, cellLayout;
+  try { config = JSON.parse(configStr); } catch (e) { return { x: 0, y: 0 }; }
+  try { cellLayout = JSON.parse(cellLayoutStr); } catch (e) { return { x: 0, y: 0 }; }
+
+  const mode = instanceNode.getPluginData('repeatMode') || config.repeat_mode || 'grid';
+  const padding = resolvePadding(config);
+  const cellW = cellLayout.width || 100;
+  const cellH = cellLayout.height || 100;
+  const col = parseInt(instanceNode.getPluginData('cellCol') || '0');
+  const row = parseInt(instanceNode.getPluginData('cellRow') || '0');
+  const idx = parseInt(instanceNode.getPluginData('cellIndex') || '0');
+
+  if (mode === 'grid') {
+    const gapX = config.gap_x || 0;
+    const gapY = config.gap_y || 0;
+    return {
+      x: padding.left + col * (cellW + gapX),
+      y: padding.top + row * (cellH + gapY),
+    };
+  } else if (mode === 'list') {
+    const gap = config.gap || 0;
+    const direction = config.direction || 'horizontal';
+    if (direction === 'horizontal') {
+      return { x: padding.left + idx * (cellW + gap), y: padding.top };
+    } else {
+      return { x: padding.left, y: padding.top + idx * (cellH + gap) };
+    }
+  }
+  return { x: 0, y: 0 };
+}
+
+/**
  * Create an Auto Layout container for a repeat group (grid or list).
  */
 async function createRepeatAutoLayout(parentFrame, group, images) {
@@ -140,28 +207,50 @@ async function createRepeatAutoLayout(parentFrame, group, images) {
 
   const config = parentLayer.repeat_config || {};
   const mode = parentLayer.repeat_mode || 'list';
+  const padding = resolvePadding(config);
 
   // Create container frame
   const container = figma.createFrame();
   container.name = parentLayer.name || parentLayer.id || 'Repeat Group';
 
-  const baseX = panel ? panel.layout.x : instances[0].layout.x;
-  const baseY = panel ? panel.layout.y : instances[0].layout.y;
+  // Store repeat metadata for export
+  const pid = parentLayer.id || parentLayer.name;
+  container.setPluginData('repeatGroup', 'true');
+  container.setPluginData('repeatMode', mode);
+  container.setPluginData('repeatConfig', JSON.stringify(config));
+  container.setPluginData('parentLayerId', pid);
+  container.setPluginData('parentLayerName', parentLayer.name || '');
+
+  // Save cell size (not area_layout) so export/import round-trip uses correct cell dimensions
+  const cellW = instances[0].layout.width;
+  const cellH = instances[0].layout.height;
+  container.setPluginData('parentLayerLayout', JSON.stringify({ x: 0, y: 0, width: cellW, height: cellH }));
+  container.setPluginData('parentLayerOpacity', String(parentLayer.opacity !== undefined ? parentLayer.opacity : 1));
+
+  // On round-trip, parentLayer.layout becomes container bounds (with cell_layout holding cell size).
+  // On first import, parentLayout.layout is cell size, so fall back to panel/instance coords.
+  const baseX = parentLayer.cell_layout ? parentLayer.layout.x : (panel ? panel.layout.x : instances[0].layout.x);
+  const baseY = parentLayer.cell_layout ? parentLayer.layout.y : (panel ? panel.layout.y : instances[0].layout.y);
   container.x = baseX;
   container.y = baseY;
 
   let containerW, containerH;
-  if (panel) {
+  if (parentLayer.cell_layout) {
+    // Round-trip: use saved container bounds directly, don't recompute
+    containerW = parentLayer.layout.width;
+    containerH = parentLayer.layout.height;
+  } else if (panel) {
     containerW = panel.layout.width;
     containerH = panel.layout.height;
   } else {
+    // First import: compute from instance absolute coordinates
     let maxRight = 0, maxBottom = 0;
     for (const inst of instances) {
       maxRight = Math.max(maxRight, inst.layout.x + inst.layout.width - baseX);
       maxBottom = Math.max(maxBottom, inst.layout.y + inst.layout.height - baseY);
     }
-    containerW = maxRight || instances[0].layout.width;
-    containerH = maxBottom || instances[0].layout.height;
+    containerW = (maxRight || instances[0].layout.width) + padding.left + padding.right;
+    containerH = (maxBottom || instances[0].layout.height) + padding.top + padding.bottom;
   }
   container.resize(containerW, containerH);
   container.fills = [];
@@ -170,28 +259,31 @@ async function createRepeatAutoLayout(parentFrame, group, images) {
   // Add panel background if exists
   if (panel) {
     const panelNode = await createLayerNode(panel, images);
+    panelNode.setPluginData('isRepeatPanel', 'true');
+    panelNode.setPluginData('repeatParentId', pid);
+    container.appendChild(panelNode);
     panelNode.x = 0;
     panelNode.y = 0;
     panelNode.resize(panel.layout.width, panel.layout.height);
-    container.appendChild(panelNode);
   }
 
   // Create auto layout frame for instances
   const autoFrame = figma.createFrame();
   autoFrame.name = 'Instances';
-  autoFrame.x = panel ? (instances[0].layout.x - baseX) : 0;
-  autoFrame.y = panel ? (instances[0].layout.y - baseY) : 0;
   autoFrame.fills = [];
   autoFrame.clipsContent = false;
+  autoFrame.setPluginData('repeatInternal', 'true');
 
-  const cellW = instances[0].layout.width;
-  const cellH = instances[0].layout.height;
+  // cellW / cellH already declared above (line ~225) for parentLayerLayout
 
   // Helper to add a node with fixed sizing into auto layout
-  async function addFixedNode(targetFrame, layer) {
+  async function addFixedNode(targetFrame, layer, extraPluginData = {}) {
     const node = await createLayerNode(layer, images);
     node.layoutSizingHorizontal = 'FIXED';
     node.layoutSizingVertical = 'FIXED';
+    for (const [key, value] of Object.entries(extraPluginData)) {
+      node.setPluginData(key, value);
+    }
     targetFrame.appendChild(node);
   }
 
@@ -202,21 +294,31 @@ async function createRepeatAutoLayout(parentFrame, group, images) {
     autoFrame.primaryAxisAlignItems = 'MIN';
     autoFrame.counterAxisAlignItems = 'MIN';
     autoFrame.itemSpacing = gap;
-    autoFrame.paddingLeft = autoFrame.paddingRight = autoFrame.paddingTop = autoFrame.paddingBottom = 0;
+    autoFrame.paddingLeft = padding.left;
+    autoFrame.paddingRight = padding.right;
+    autoFrame.paddingTop = padding.top;
+    autoFrame.paddingBottom = padding.bottom;
 
     for (const inst of instances) {
-      await addFixedNode(autoFrame, inst);
+      await addFixedNode(autoFrame, inst, {
+        isRepeatInstance: 'true',
+        parentId: pid,
+        cellIndex: String(inst.cell_index || 0),
+        cellRow: String(inst.cell_row || 0),
+        cellCol: String(inst.cell_col || 0),
+        repeatMode: mode,
+      });
     }
 
     autoFrame.primaryAxisSizingMode = 'FIXED';
     autoFrame.counterAxisSizingMode = 'FIXED';
     autoFrame.resize(
       direction === 'horizontal'
-        ? instances.length * cellW + Math.max(0, instances.length - 1) * gap
-        : cellW,
+        ? instances.length * cellW + Math.max(0, instances.length - 1) * gap + padding.left + padding.right
+        : cellW + padding.left + padding.right,
       direction === 'horizontal'
-        ? cellH
-        : instances.length * cellH + Math.max(0, instances.length - 1) * gap
+        ? cellH + padding.top + padding.bottom
+        : instances.length * cellH + Math.max(0, instances.length - 1) * gap + padding.top + padding.bottom
     );
   } else if (mode === 'grid') {
     const cols = config.cols || 1;
@@ -227,35 +329,69 @@ async function createRepeatAutoLayout(parentFrame, group, images) {
     if (cols === 1 && rows === 1) {
       autoFrame.layoutMode = 'HORIZONTAL';
       autoFrame.itemSpacing = 0;
-      await addFixedNode(autoFrame, instances[0]);
-      autoFrame.resize(cellW, cellH);
+      autoFrame.paddingLeft = padding.left;
+      autoFrame.paddingRight = padding.right;
+      autoFrame.paddingTop = padding.top;
+      autoFrame.paddingBottom = padding.bottom;
+      await addFixedNode(autoFrame, instances[0], {
+        isRepeatInstance: 'true',
+        parentId: pid,
+        cellIndex: String(instances[0].cell_index || 0),
+        cellRow: String(instances[0].cell_row || 0),
+        cellCol: String(instances[0].cell_col || 0),
+        repeatMode: mode,
+      });
+      autoFrame.resize(cellW + padding.left + padding.right, cellH + padding.top + padding.bottom);
     } else if (cols === 1) {
       autoFrame.layoutMode = 'VERTICAL';
       autoFrame.primaryAxisAlignItems = 'MIN';
       autoFrame.counterAxisAlignItems = 'MIN';
       autoFrame.itemSpacing = gapY;
-      autoFrame.paddingLeft = autoFrame.paddingRight = autoFrame.paddingTop = autoFrame.paddingBottom = 0;
+      autoFrame.paddingLeft = padding.left;
+      autoFrame.paddingRight = padding.right;
+      autoFrame.paddingTop = padding.top;
+      autoFrame.paddingBottom = padding.bottom;
       for (const inst of instances) {
-        await addFixedNode(autoFrame, inst);
+        await addFixedNode(autoFrame, inst, {
+          isRepeatInstance: 'true',
+          parentId: pid,
+          cellIndex: String(inst.cell_index || 0),
+          cellRow: String(inst.cell_row || 0),
+          cellCol: String(inst.cell_col || 0),
+          repeatMode: mode,
+        });
       }
-      autoFrame.resize(cellW, rows * cellH + Math.max(0, rows - 1) * gapY);
+      autoFrame.resize(cellW + padding.left + padding.right, rows * cellH + Math.max(0, rows - 1) * gapY + padding.top + padding.bottom);
     } else if (rows === 1) {
       autoFrame.layoutMode = 'HORIZONTAL';
       autoFrame.primaryAxisAlignItems = 'MIN';
       autoFrame.counterAxisAlignItems = 'MIN';
       autoFrame.itemSpacing = gapX;
-      autoFrame.paddingLeft = autoFrame.paddingRight = autoFrame.paddingTop = autoFrame.paddingBottom = 0;
+      autoFrame.paddingLeft = padding.left;
+      autoFrame.paddingRight = padding.right;
+      autoFrame.paddingTop = padding.top;
+      autoFrame.paddingBottom = padding.bottom;
       for (const inst of instances) {
-        await addFixedNode(autoFrame, inst);
+        await addFixedNode(autoFrame, inst, {
+          isRepeatInstance: 'true',
+          parentId: pid,
+          cellIndex: String(inst.cell_index || 0),
+          cellRow: String(inst.cell_row || 0),
+          cellCol: String(inst.cell_col || 0),
+          repeatMode: mode,
+        });
       }
-      autoFrame.resize(cols * cellW + Math.max(0, cols - 1) * gapX, cellH);
+      autoFrame.resize(cols * cellW + Math.max(0, cols - 1) * gapX + padding.left + padding.right, cellH + padding.top + padding.bottom);
     } else {
       // Nested grid: outer VERTICAL, inner HORIZONTAL per row
       autoFrame.layoutMode = 'VERTICAL';
       autoFrame.primaryAxisAlignItems = 'MIN';
       autoFrame.counterAxisAlignItems = 'MIN';
       autoFrame.itemSpacing = gapY;
-      autoFrame.paddingLeft = autoFrame.paddingRight = autoFrame.paddingTop = autoFrame.paddingBottom = 0;
+      autoFrame.paddingLeft = padding.left;
+      autoFrame.paddingRight = padding.right;
+      autoFrame.paddingTop = padding.top;
+      autoFrame.paddingBottom = padding.bottom;
 
       for (let r = 0; r < rows; r++) {
         const rowFrame = figma.createFrame();
@@ -267,10 +403,18 @@ async function createRepeatAutoLayout(parentFrame, group, images) {
         rowFrame.paddingLeft = rowFrame.paddingRight = rowFrame.paddingTop = rowFrame.paddingBottom = 0;
         rowFrame.fills = [];
         rowFrame.clipsContent = false;
+        rowFrame.setPluginData('repeatInternal', 'true');
 
         const rowInstances = instances.filter(inst => (inst.cell_row || 0) === r);
         for (const inst of rowInstances) {
-          await addFixedNode(rowFrame, inst);
+          await addFixedNode(rowFrame, inst, {
+            isRepeatInstance: 'true',
+            parentId: pid,
+            cellIndex: String(inst.cell_index || 0),
+            cellRow: String(inst.cell_row || 0),
+            cellCol: String(inst.cell_col || 0),
+            repeatMode: mode,
+          });
         }
 
         // Fix row frame size explicitly so it doesn't collapse to default 100
@@ -287,8 +431,8 @@ async function createRepeatAutoLayout(parentFrame, group, images) {
       autoFrame.primaryAxisSizingMode = 'FIXED';
       autoFrame.counterAxisSizingMode = 'FIXED';
       autoFrame.resize(
-        cols * cellW + Math.max(0, cols - 1) * gapX,
-        rows * cellH + Math.max(0, rows - 1) * gapY
+        cols * cellW + Math.max(0, cols - 1) * gapX + padding.left + padding.right,
+        rows * cellH + Math.max(0, rows - 1) * gapY + padding.top + padding.bottom
       );
     }
 
@@ -297,6 +441,8 @@ async function createRepeatAutoLayout(parentFrame, group, images) {
   }
 
   container.appendChild(autoFrame);
+  autoFrame.x = 0;
+  autoFrame.y = 0;
   parentFrame.appendChild(container);
 }
 
@@ -385,15 +531,17 @@ async function importLayers(plan, images) {
     // Skip if already processed as part of a repeat group
     if (processedNames.has(layer.name)) continue;
 
-    // Check if this layer belongs to a repeat group
+    // Determine group key for any repeat-related layer (parent, instance, or panel)
     let groupKey = null;
-    if (layer.is_repeat_instance && layer.parent_id && repeatGroups[layer.parent_id]) {
+    if (layer.is_repeat_parent) {
+      groupKey = layer.id || layer.name;
+    } else if (layer.is_repeat_instance && layer.parent_id) {
       groupKey = layer.parent_id;
-    } else if (layer.is_repeat_panel && layer.repeat_parent_id && repeatGroups[layer.repeat_parent_id]) {
+    } else if (layer.is_repeat_panel && layer.repeat_parent_id) {
       groupKey = layer.repeat_parent_id;
     }
 
-    if (groupKey && !processedNames.has('__group__' + groupKey)) {
+    if (groupKey && repeatGroups[groupKey] && !processedNames.has('__group__' + groupKey)) {
       processedNames.add('__group__' + groupKey);
       const group = repeatGroups[groupKey];
 
@@ -437,6 +585,7 @@ async function importLayers(plan, images) {
     try {
       const rect = await createLayerNode(layer, images);
       frame.appendChild(rect);
+      processedNames.add(layer.name);
 
       // Count for stats
       const layerId = layer.id || (layer.source ? layer.source.split('/').pop().replace(/\.png$/i, '') : layer.name);
@@ -474,6 +623,9 @@ async function importLayers(plan, images) {
  * Export current Figma selection as an enhanced_layer_plan JSON.
  * User must select a single Frame that was previously imported.
  * If refPlan is provided, metadata (content, source, status, id) is merged by name match.
+ *
+ * Recursively traverses the frame tree to recover repeat group structures
+ * (container → panel → instances) via pluginData set during import.
  */
 async function exportLayerPlan(refPlan) {
   const selection = figma.currentPage.selection;
@@ -497,7 +649,6 @@ async function exportLayerPlan(refPlan) {
   }
 
   const frame = node;
-  const children = frame.children || [];
 
   // Build reference map by name (for merging metadata)
   const refMap = new Map();
@@ -511,24 +662,86 @@ async function exportLayerPlan(refPlan) {
   const exportedLayers = [];
   const stackingOrder = [];
 
-  for (const child of children) {
-    // Only export visible rectangle/image-like nodes
-    if (child.type !== 'RECTANGLE' && child.type !== 'VECTOR' && child.type !== 'GROUP') {
-      continue;
+  /**
+   * Sync actual Figma auto-layout values back to repeat_config so that
+   * user edits (padding, gap) inside Figma are preserved on export.
+   */
+  function syncAutoLayoutToConfig(container, config) {
+    const autoFrame = (container.children || []).find(c => c.getPluginData && c.getPluginData('repeatInternal') === 'true');
+    if (!autoFrame) return;
+
+    // repeat_mode is NOT stored inside repeatConfig pluginData; read it from the container directly.
+    const mode = container.getPluginData('repeatMode') || 'grid';
+
+    // Sync padding from autoFrame
+    config.padding = {
+      top: autoFrame.paddingTop || 0,
+      right: autoFrame.paddingRight || 0,
+      bottom: autoFrame.paddingBottom || 0,
+      left: autoFrame.paddingLeft || 0
+    };
+
+    // Sync gaps
+    if (mode === 'grid') {
+      // Nested grid: gapY from autoFrame, gapX from first rowFrame
+      const rowFrame = (autoFrame.children || []).find(c => c.getPluginData && c.getPluginData('repeatInternal') === 'true');
+      if (rowFrame) {
+        config.gap_y = autoFrame.itemSpacing || 0;
+        config.gap_x = rowFrame.itemSpacing || 0;
+      } else {
+        // Single row or single col
+        if (autoFrame.layoutMode === 'HORIZONTAL') {
+          config.gap_x = autoFrame.itemSpacing || 0;
+        } else {
+          config.gap_y = autoFrame.itemSpacing || 0;
+        }
+      }
+    } else if (mode === 'list') {
+      config.gap = autoFrame.itemSpacing || 0;
+      // Clean up mistaken grid fields from previous exports
+      delete config.gap_x;
+      delete config.gap_y;
     }
 
+    // Write updated config back to container pluginData so that
+    // getInstanceRelativePosition (which reads pluginData) uses the new values.
+    container.setPluginData('repeatConfig', JSON.stringify(config));
+  }
+
+  /**
+   * Build a layer entry from a Figma node, restoring repeat metadata from pluginData.
+   */
+  function buildLayerFromNode(child) {
     const name = child.name || 'Layer';
     const ref = refMap.get(name);
 
-    // Recover original id from plugin data, or fall back to ref/id generation
+    // Recover original id from plugin data
     let id = child.getPluginData('layerId');
+    if (!id && child.type === 'FRAME' && child.getPluginData('repeatGroup') === 'true') {
+      id = child.getPluginData('parentLayerId');
+    }
     if (!id && ref && ref.id) id = ref.id;
     if (!id) id = name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
     if (!id) id = 'layer_' + exportedLayers.length;
 
+    // Coordinates:
+    // - repeat instance: compute relative position from config for round-trip accuracy
+    // - repeat panel: at (0,0) inside container
+    // - repeat container / normal layers: actual frame-relative position
+    let x, y;
+    if (child.getPluginData('isRepeatInstance') === 'true') {
+      const pos = getInstanceRelativePosition(child);
+      x = pos.x; y = pos.y;
+    } else if (child.getPluginData('isRepeatPanel') === 'true') {
+      x = 0; y = 0;
+    } else {
+      x = child.x !== null && child.x !== undefined ? child.x : 0;
+      y = child.y !== null && child.y !== undefined ? child.y : 0;
+    }
+
     const layout = {
-      x: Math.round(child.x),
-      y: Math.round(child.y),
+      x: Math.round(x),
+      y: Math.round(y),
       width: Math.round(child.width),
       height: Math.round(child.height),
     };
@@ -546,8 +759,83 @@ async function exportLayerPlan(refPlan) {
       if (ref.source) layer.source = ref.source;
     }
 
-    exportedLayers.push(layer);
-    stackingOrder.push(id);
+    // Restore repeat group metadata (container frame)
+    if (child.type === 'FRAME' && child.getPluginData('repeatGroup') === 'true') {
+      layer.is_repeat_parent = true;
+      layer.repeat_mode = child.getPluginData('repeatMode') || 'grid';
+      const configStr = child.getPluginData('repeatConfig');
+      if (configStr) {
+        try { layer.repeat_config = JSON.parse(configStr); } catch (e) { layer.repeat_config = {}; }
+      } else {
+        layer.repeat_config = {};
+      }
+      // Sync user-edited auto-layout values back to config
+      syncAutoLayoutToConfig(child, layer.repeat_config);
+      // Export cell size separately for preview.html
+      const parentLayoutStr = child.getPluginData('parentLayerLayout');
+      if (parentLayoutStr) {
+        try { layer.cell_layout = JSON.parse(parentLayoutStr); } catch (e) {}
+      }
+      const parentOpacityStr = child.getPluginData('parentLayerOpacity');
+      if (parentOpacityStr) {
+        layer.opacity = parseFloat(parentOpacityStr);
+      }
+    }
+
+    // Restore panel metadata
+    if (child.getPluginData('isRepeatPanel') === 'true') {
+      layer.is_repeat_panel = true;
+      layer.repeat_parent_id = child.getPluginData('repeatParentId') || '';
+    }
+
+    // Restore instance metadata
+    if (child.getPluginData('isRepeatInstance') === 'true') {
+      layer.is_repeat_instance = true;
+      layer.parent_id = child.getPluginData('parentId') || '';
+      layer.cell_index = parseInt(child.getPluginData('cellIndex') || '0');
+      layer.cell_row = parseInt(child.getPluginData('cellRow') || '0');
+      layer.cell_col = parseInt(child.getPluginData('cellCol') || '0');
+      layer.repeat_mode = child.getPluginData('repeatMode') || '';
+    }
+
+    return layer;
+  }
+
+  /**
+   * Recursively traverse the node tree, exporting layers while skipping
+   * internal auto-layout structures.
+   */
+  function traverseAndExport(node) {
+    // Skip internal auto-layout frames (instances live inside them)
+    if (node.getPluginData && node.getPluginData('repeatInternal') === 'true') {
+      for (const child of node.children || []) {
+        traverseAndExport(child);
+      }
+      return;
+    }
+
+    if (node.type === 'RECTANGLE' || node.type === 'VECTOR' || node.type === 'GROUP') {
+      const layer = buildLayerFromNode(node);
+      exportedLayers.push(layer);
+      stackingOrder.push(layer.id);
+    } else if (node.type === 'FRAME' && node.getPluginData && node.getPluginData('repeatGroup') === 'true') {
+      // Repeat group container: export as parent, then recurse for panel + instances
+      const layer = buildLayerFromNode(node);
+      exportedLayers.push(layer);
+      stackingOrder.push(layer.id);
+      for (const child of node.children || []) {
+        traverseAndExport(child);
+      }
+    } else if (node.type === 'FRAME' || node.type === 'GROUP') {
+      // Regular frame/group: recurse into children
+      for (const child of node.children || []) {
+        traverseAndExport(child);
+      }
+    }
+  }
+
+  for (const child of frame.children || []) {
+    traverseAndExport(child);
   }
 
   const result = {

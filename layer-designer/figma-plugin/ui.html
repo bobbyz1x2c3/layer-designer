@@ -247,7 +247,13 @@
 
     function isPlanFile(name) {
       const n = name.toLowerCase();
-      return n.endsWith('.json') && (n.includes('layer_plan') || n.includes('enhanced_layer_plan'));
+      // Accept any JSON that looks like a layer plan (name contains plan keywords,
+      // or we will validate content after parsing)
+      if (!n.endsWith('.json')) return false;
+      // Heuristic: filename hints at being a layer plan
+      if (n.includes('layer_plan') || n.includes('enhanced_layer_plan') || n.includes('detected_layout')) return true;
+      // Fallback: accept all JSONs — content will be validated after parsing
+      return true;
     }
 
     // Resolve a relative path from a base directory
@@ -372,19 +378,27 @@
         }
       }
 
-      // Flatten to detectedPlans (one per dir, prefer enhanced)
+      // Flatten to detectedPlans — keep ALL JSON plans so user can choose
+      // (especially important when exported plan coexists with original plan)
       for (const dir of Object.keys(plansByDir).sort()) {
         const files = plansByDir[dir];
-        const enhanced = files.find(f => f.name.toLowerCase().includes('enhanced'));
-        detectedPlans.push({
-          dir,
-          file: enhanced || files[0],
-          label: `${dir ? dir + '/' : ''}${(enhanced || files[0]).name}`
-        });
+        for (const file of files) {
+          detectedPlans.push({
+            dir,
+            file,
+            label: `${dir ? dir + '/' : ''}${file.name}`
+          });
+        }
       }
 
       if (detectedPlans.length === 0) {
-        setStatus('No layer_plan.json found in selected folder. Try Manual mode or check folder contents.', 'error');
+        const jsonFiles = allFolderFiles.filter(f => f.name.toLowerCase().endsWith('.json'));
+        const allNames = allFolderFiles.slice(0, 20).map(f => f.name).join(', ');
+        if (jsonFiles.length > 0) {
+          setStatus(`Found ${jsonFiles.length} JSON(s) but none passed validation. Files: ${jsonFiles.map(f => f.name).join(', ')}. Try Manual mode to select directly.`, 'error');
+        } else {
+          setStatus(`No JSON files found in selected folder. First 20 items: ${allNames || '(empty)'}`, 'error');
+        }
         updateSummary();
         return;
       }

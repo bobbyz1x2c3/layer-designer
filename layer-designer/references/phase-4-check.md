@@ -101,10 +101,19 @@ This step is **not run by default**. It is offered to the user in Step 3 when th
 ```bash
 # 1. User confirms they want algorithmic alignment
 # 2. Run detection (read-only, does not modify any layer images)
+#    By default, all non-background, non-repeat layers are processed.
 python scripts/detect_layer_positions.py \
   --project my-app --config config.json \
   --preview output/my-app/01-requirements/previews/preview_v2_001.png \
   --phase rough
+
+# 2b. Detect only specific layers (useful when only a few layers are misaligned)
+python scripts/detect_layer_positions.py \
+  --project my-app --config config.json \
+  --preview output/my-app/01-requirements/previews/preview_v2_001.png \
+  --phase rough \
+  --layer sidebar \
+  --layer header
 
 # 3. Apply detected layouts (backs up existing enhanced_layer_plan.json)
 python scripts/generate_preview.py \
@@ -112,6 +121,22 @@ python scripts/generate_preview.py \
   --project my-app \
   --phase check \
   --apply-detected-layouts
+```
+
+**Per-layer detection**: The `--layer` / `-l` flag accepts a layer `id` or `name` and can be used multiple times. Only the specified layers will be template-matched; others are skipped. This is useful when:
+- The user reports only 1–2 specific layers are misaligned
+- You want to quickly verify a single layer's detection quality before running on all layers
+- Running on all layers is too slow and only a subset needs correction
+
+**Force mode** (`--force`): Bypasses all safety checks (opacity < 0.85, background, repeat) and attempts template matching on every requested layer. Use **only** when the user explicitly demands it — e.g., a semitransparent panel that the user insists on aligning, or a repeat parent whose single-cell template happens to be distinctive enough to match. Warn the user that forced detection may produce unreliable results.
+```bash
+# Force detect a semitransparent layer that is normally skipped
+python scripts/detect_layer_positions.py \
+  --project my-app --config config.json \
+  --preview output/my-app/01-requirements/previews/preview_v2_001.png \
+  --phase rough \
+  --layer glass_panel \
+  --force
 ```
 
 ---

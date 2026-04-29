@@ -20,6 +20,15 @@ Use the agent's visual understanding capability to inspect the confirmed preview
 - Identify all distinct visual regions / components
 - Determine which elements should be on separate layers
 - Note the stacking order (what is behind what)
+- **Detect repeat patterns** (grid/list): Look for multiple identical or near-identical elements arranged in a pattern
+- **Detect carrier panels** for repeats: Check whether any grid/list has a **shared container panel** that carries the repeating elements. A carrier panel includes:
+  - Background shape (rounded rectangle, card, bar, pill, etc.)
+  - Texture, gradient, or pattern fill on that shape
+  - Decorative borders, outlines, ornamental framing
+  - Drop shadow, inner glow, ambient occlusion
+  - Any visual element that is **shared across all cells** and **positioned beneath them**
+  - If present → this panel becomes a separate layer with `auto_panel`
+  - If absent → cells float directly on the main background
 
 ---
 
@@ -66,6 +75,21 @@ During visual analysis, identify whether any regions contain **multiple identica
 - Each element has **distinctly different visuals** (e.g., each card has a unique product photo)
 - Elements vary significantly in size or shape
 
+**Carrier panel detection (MUST be done alongside repeat detection):**
+
+When you detect a grid/list, always check whether the repeating elements sit inside a **shared carrier panel**:
+
+| Panel Evidence | Description | `auto_panel` Action |
+|---------------|-------------|---------------------|
+| **Background shape** | Rounded rectangle, card, bar, pill behind all cells | `enabled: true` |
+| **Texture / pattern fill** | Gradient, noise, fabric, glass, or decorative texture on the container | `enabled: true` |
+| **Decorative border** | Outline, ornamental frame, corner accents, gold trim | `enabled: true` |
+| **Shadow / glow** | Drop shadow, inner glow, ambient occlusion around the container | `enabled: true` |
+| **No shared container** | Cells float directly on the main background, each has its own isolated background | Omit `auto_panel` |
+| **Uncertain** | Partial background or ambiguous edges | Ask user |
+
+The carrier panel is **NOT** the main page background — it is a secondary container that exists specifically to hold the grid/list items. It must be extracted as a separate layer so that the repeat parent layer (the single cell) can be composited on top of it cleanly.
+
 **`repeat_config` fields:**
 
 For `grid`:
@@ -73,19 +97,21 @@ For `grid`:
 |-------|-------------|---------|
 | `cols` | Number of columns | `3` |
 | `rows` | Number of rows | `2` |
-| `area_layout` | Position of the first cell `{x, y}` (optional) | `{"x": 200, "y": 150}` |
+| `area_layout` | **Default panel boundary** `{x, y, width, height}`. Defines the full container area and serves as the panel dimensions by default. When `width/height` are provided, cells are positioned inside this area subject to `padding`, and the panel itself uses these exact dimensions. Only use `auto_panel.layout` if the panel needs to deviate from this boundary. When `width/height` are omitted, falls back to legacy mode where `x/y` is the direct cell start. | `{"x": 200, "y": 150, "width": 620, "height": 420}` |
+| `padding` | Inner padding between panel edge and cells. Can be a single number (all sides) or `{top, right, bottom, left}`. Defaults to `0`. When `0`, `area_layout` is the exact cell area (no panel gap). | `24` or `{"top": 24, "right": 24, "bottom": 24, "left": 24}` |
 | `gap_x` | Horizontal gap between cells (px) | `20` |
 | `gap_y` | Vertical gap between cells (px) | `20` |
-| `auto_panel` | Optional panel background config | See below |
+| `auto_panel` | Optional panel background config. Only needed when the panel deviates from `area_layout`. | See below |
 
 For `list`:
 | Field | Description | Example |
 |-------|-------------|---------|
 | `direction` | `horizontal` or `vertical` | `horizontal` |
 | `count` | Number of items | `5` |
-| `area_layout` | Position of the first item `{x, y}` (optional) | `{"x": 100, "y": 300}` |
+| `area_layout` | **Default panel boundary** `{x, y, width, height}`. Defines the full container area and serves as the panel dimensions by default. When `width/height` are provided, cells are positioned inside this area subject to `padding`, and the panel itself uses these exact dimensions. Only use `auto_panel.layout` if the panel needs to deviate from this boundary. When `width/height` are omitted, falls back to legacy mode where `x/y` is the direct cell start. | `{"x": 100, "y": 300, "width": 500, "height": 80}` |
+| `padding` | Inner padding between panel edge and cells. Can be a single number (all sides) or `{top, right, bottom, left}`. Defaults to `0`. When `0`, `area_layout` is the exact cell area (no panel gap). | `16` or `{"top": 16, "right": 16, "bottom": 16, "left": 16}` |
 | `gap` | Gap between items (px) | `16` |
-| `auto_panel` | Optional panel background config | See below |
+| `auto_panel` | Optional panel background config. Only needed when the panel deviates from `area_layout`. | See below |
 
 **`auto_panel` — 容器背景层（可选）**
 
@@ -99,8 +125,28 @@ For `list`:
 | `description` | Optional | Content for prompt generation | `"White rounded panel background"` |
 | `opacity` | Optional | Panel opacity | `1.0` |
 | `quality_tier` | Optional | Generation quality | `"low"` |
+| `layout` | Optional | **Override** for panel position/size. Use ONLY when the panel needs to deviate from `area_layout` — e.g., the carrier shape has a drop shadow extending beyond the cell area, or the panel is visually offset from the cell grid. In the common case where the panel perfectly matches the cell area, omit this field and let `area_layout` define the boundary. | `{"x": 190, "y": 140, "width": 620, "height": 420}` |
 
-Panel 层会自动计算覆盖整个 repeat 区域的 bounding box，并在 stacking_order 中**置于实例下方**。
+**Panel layout 计算方式（优先级从高到低）：**
+
+| 优先级 | 来源 | 说明 |
+|--------|------|------|
+| **1. 手动覆盖** | `auto_panel.layout` | 最高优先级，直接覆盖所有计算 |
+| **2. area_layout** | `repeat_config.area_layout.width/height` | `area_layout` 显式定义 panel 边界时，直接使用其 `width/height` |
+| **3. 自动推导** | `cols/rows/gap` 或 `count/direction/gap` | 从 cell 数量和间距推导 panel 大小（向后兼容） |
+
+**Cells 定位规则：**
+
+| 条件 | 行为 |
+|------|------|
+| `area_layout` 有 `width/height` | `area_layout` 就是 panel 边界（默认）；cells 起始位置 = `area_layout.x + padding.left`, `area_layout.y + padding.top` |
+| `area_layout` 只有 `x/y`（legacy） | `area_layout.x/y` 就是 cells 的直接起始位置；无 panel 概念 |
+| `padding = 0`（或无 padding） | cells 紧贴 `area_layout` 边缘，panel 和内容区重合 |
+| 需要 panel 偏离 `area_layout` | 配置 `auto_panel.layout` 覆盖；此时 panel 用覆盖值，cells 仍按 `area_layout + padding` 定位 |
+
+> **原则**：`area_layout` 就是 panel 的默认边界。只有在视觉上 panel 比 cell 区域大（如阴影外扩）或小（如内凹底板）时，才需要 `auto_panel.layout`。常规情况下完全不需要配置 `auto_panel.layout`。
+
+Panel 在 `stacking_order` 中自动置于实例**下方**。
 
 **Example `layer_plan.json` with repeat_mode + auto_panel:**
 ```json
@@ -108,14 +154,15 @@ Panel 层会自动计算覆盖整个 repeat 区域的 bounding box，并在 stac
   "name": "商品卡片",
   "id": "product_card",
   "description": "Product card with image, title, price",
-  "layout": {"x": 0, "y": 0, "width": 280, "height": 360},
+  "layout": {"x": 0, "y": 0, "width": 180, "height": 240},
   "quality_tier": "medium",
   "opacity": 1.0,
   "repeat_mode": "grid",
   "repeat_config": {
     "cols": 3,
     "rows": 2,
-    "area_layout": {"x": 200, "y": 150},
+    "area_layout": {"x": 200, "y": 150, "width": 620, "height": 420},
+    "padding": {"top": 24, "right": 24, "bottom": 24, "left": 24},
     "gap_x": 20,
     "gap_y": 20,
     "auto_panel": {
@@ -317,15 +364,24 @@ Once user confirms:
 2. Re-count total "effective layers" (parents count as 1 for generation)
 3. Present updated plan including repeat savings summary
 
-**Panel background detection during visual analysis:**
+**Carrier panel detection during visual analysis (MUST):**
 
-When inspecting the preview for repeat patterns, also check whether the grid/list has a **container background / panel**:
+When inspecting the preview for repeat patterns, you **must** also check whether the grid/list has a **carrier panel** — a shared container that visually carries all repeating elements. This is **not** the main page background; it is a secondary container specific to the grid/list region.
 
-| Panel Type | Visual Evidence | `auto_panel` Action |
-|-----------|-----------------|---------------------|
-| **Has panel** | Visible background shape behind all cells (rounded rectangle, card, bar) | Include `auto_panel: {enabled: true, ...}` in `repeat_config` |
-| **No panel** | Cells float directly on the main background, no visible container | Omit `auto_panel` or set `enabled: false` |
-| **Uncertain** | Partial background or ambiguous edges | Ask user: "该区域是否有容器背景？" |
+A carrier panel may include any or all of the following visual elements:
+
+| Panel Component | Visual Evidence | Action |
+|----------------|-----------------|--------|
+| **Background shape** | Rounded rectangle, card, bar, pill, or other geometric shape behind all cells | `auto_panel: {enabled: true}` |
+| **Texture / pattern fill** | Gradient, noise, fabric, glass, marble, or decorative texture on the container shape | `auto_panel: {enabled: true}` |
+| **Decorative border / frame** | Outline, ornamental frame, corner accents, gold trim, etched edges | `auto_panel: {enabled: true}` |
+| **Shadow / glow effects** | Drop shadow, inner glow, ambient occlusion, bloom around the container perimeter | `auto_panel: {enabled: true}` |
+| **No shared container** | Cells float directly on the main background; each cell has its own isolated background with no shared visual wrapper | Omit `auto_panel` or `enabled: false` |
+| **Uncertain** | Partial background, ambiguous edges, or mixed evidence | Ask user: "该重复区域的子项是否共享一个容器面板（包含底板、纹理、边框、阴影等）？" |
+
+**Why carrier panel matters:**
+- Without extracting the panel as a separate layer, the repeat parent (single cell) would need to include the panel background in every instance → redundant and compositing issues
+- With `auto_panel`, the panel is generated **once** as a full-area layer, and the repeat parent (single cell) is generated **once** as a clean element on transparent background → instances are composited on top of the panel cleanly
 
 **Panel 尺寸自动计算：**
 - `expand_repeats.py` 自动根据 `cols/rows/gap` 或 `count/direction/gap` 计算覆盖整个 repeat 区域的 bounding box

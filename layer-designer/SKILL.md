@@ -254,13 +254,26 @@ Two independent choices at Phase 1:
 9. **Image-to-image for modifications**: Any revision, fix, or incremental update MUST use `generate_image.py edit` (image-to-image) with the existing preview or layer as `--image`. Do NOT use `generate` (text-to-image) for modifications. Multiple `--image` paths are supported for multi-reference editing (images are combined horizontally, max 5 images).
 10. **Layout extraction in Phase 2**: Every layer in `layer_plan.json` MUST include a `layout` object with `x`, `y`, `width`, `height` (full-size canvas coordinates). This is required for the HTML preview generator.
 11. **Preview generation**: Phase 4 and Phase 7 use `generate_preview.py` to produce an interactive HTML preview. The Phase 4 preview supports drag/resize/export for layout fine-tuning.
+    - **Algorithmic layer alignment** (`detect_layer_positions.py`): Offered when the user reports misaligned layers. By default runs on all eligible layers, but supports `--layer <id>` to target only specific layers — useful when only 1–2 layers need correction or when verifying detection quality on a single layer before batch processing.
+    - **`--force` flag**: Bypasses opacity/background/repeat safety checks. Only use when the user **explicitly demands** detection on a layer that would normally be skipped (e.g., a semitransparent panel or a background shape the user wants aligned). Warn the user that forced detection may produce unreliable results.
 12. **Repeat mode (grid/list)**: 
     - In **Phase 2 (or Phase 1 Step 9 for Fast Track)**, the agent MUST visually inspect the confirmed preview for repeating patterns (grid/list) and ask the user before applying `repeat_mode`.
     - **High confidence** (visually identical elements): Auto-suggest with savings summary.
     - **Medium confidence** (similar structure but different content): Prompt user with options (enable / disable / mixed).
     - **User response**: "启用" → apply; "不启用" → skip; "只启用 XX" → selective apply.
     - Once confirmed, layers with `repeat_mode: "grid"` or `repeat_mode: "list"` and `repeat_config` reduce API calls from N per-cell to 1 per-parent.
-    - **Panel background**: If the grid/list has a visible container background (panel, card, bar), include `auto_panel: {enabled: true, ...}` in `repeat_config`. `expand_repeats.py` will generate a separate panel layer positioned beneath the instances.
+    - **Carrier panel detection (MUST)**: When detecting repeat patterns, the agent **must** also check whether the grid/list has a **carrier panel** — a shared container that visually holds all repeating elements. This is NOT the main page background; it is a secondary container specific to the grid/list region, and may include:
+      - Background shape (rounded rectangle, card, bar, pill)
+      - Texture, gradient, or pattern fill on the shape
+      - Decorative borders, ornamental framing, corner accents
+      - Drop shadow, inner glow, or ambient occlusion around the container
+      - Any visual element shared across all cells and positioned beneath them
+      - If present → `auto_panel: {enabled: true, ...}` in `repeat_config`; `expand_repeats.py` generates it as a separate layer beneath instances
+      - **`area_layout` as the default panel boundary**: `repeat_config.area_layout` should include `{"x", "y", "width", "height"}` to define the panel boundary. By default, this boundary IS the panel — `expand_repeats.py` uses `area_layout.width/height` directly as the panel dimensions. `repeat_config.padding` (single number or `{top, right, bottom, left}`) controls the inner offset between panel edge and cells. When `padding = 0`, cells sit flush against the panel edge (effectively no visual panel gap)
+      - Cells are positioned at `area_layout.x + padding.left`, `area_layout.y + padding.top`, derived from the panel boundary plus padding offset
+      - **`auto_panel.layout` override (rarely needed)**: Only configure `auto_panel.layout` when the panel needs to deviate from `area_layout` — e.g., the panel has a drop shadow that extends beyond `area_layout`, or the carrier shape is visually larger/smaller than the cell area. In the common case where the panel perfectly contains all cells, omit `auto_panel.layout` entirely; `area_layout` alone is sufficient
+      - Panel layout resolution: `auto_panel.layout` (manual override, only when deviating) > `area_layout.width/height` (default panel boundary) > auto-calculate from `cols/rows/gap` (legacy fallback)
+      - If absent → cells float on main background; omit `auto_panel`
     - **Generation scope**: `expand_repeats.py` produces 3 layer types in `expanded_layer_plan.json`:
       - `is_repeat_parent: true` — generate once in Phase 3/6
       - `is_repeat_panel: true` — generate once in Phase 3/6 (if enabled)
