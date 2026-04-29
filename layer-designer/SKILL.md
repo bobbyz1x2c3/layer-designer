@@ -254,6 +254,18 @@ Two independent choices at Phase 1:
 9. **Image-to-image for modifications**: Any revision, fix, or incremental update MUST use `generate_image.py edit` (image-to-image) with the existing preview or layer as `--image`. Do NOT use `generate` (text-to-image) for modifications. Multiple `--image` paths are supported for multi-reference editing (images are combined horizontally, max 5 images).
 10. **Layout extraction in Phase 2**: Every layer in `layer_plan.json` MUST include a `layout` object with `x`, `y`, `width`, `height` (full-size canvas coordinates). This is required for the HTML preview generator.
 11. **Preview generation**: Phase 4 and Phase 7 use `generate_preview.py` to produce an interactive HTML preview. The Phase 4 preview supports drag/resize/export for layout fine-tuning.
+12. **Repeat mode (grid/list)**: 
+    - In **Phase 2 (or Phase 1 Step 9 for Fast Track)**, the agent MUST visually inspect the confirmed preview for repeating patterns (grid/list) and ask the user before applying `repeat_mode`.
+    - **High confidence** (visually identical elements): Auto-suggest with savings summary.
+    - **Medium confidence** (similar structure but different content): Prompt user with options (enable / disable / mixed).
+    - **User response**: "启用" → apply; "不启用" → skip; "只启用 XX" → selective apply.
+    - Once confirmed, layers with `repeat_mode: "grid"` or `repeat_mode: "list"` and `repeat_config` reduce API calls from N per-cell to 1 per-parent.
+    - **Panel background**: If the grid/list has a visible container background (panel, card, bar), include `auto_panel: {enabled: true, ...}` in `repeat_config`. `expand_repeats.py` will generate a separate panel layer positioned beneath the instances.
+    - **Generation scope**: `expand_repeats.py` produces 3 layer types in `expanded_layer_plan.json`:
+      - `is_repeat_parent: true` — generate once in Phase 3/6
+      - `is_repeat_panel: true` — generate once in Phase 3/6 (if enabled)
+      - `is_repeat_instance: true` — do NOT generate, reuse parent's PNG
+    - **State variants (Phase 8)**: Generate variants from the **parent layer** only. All instances automatically share the same state variants because they reference the parent's PNG path.
 
 ---
 

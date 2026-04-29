@@ -32,7 +32,9 @@
 **Script**: `generate_variants.py` (recommended batch) or `generate_image.py edit` (individual)
 
 For each requested control:
-1. Identify which layer contains this control
+1. Identify which layer contains this control:
+   - For **repeat-mode controls** (grid/list): use the **parent layer** (`is_repeat_parent: true`) as the base image
+   - The generated state variants will be shared by all instances automatically
 2. Read the control's `layout.width` and `layout.height` from `layer_plan.json`
 3. **Compute compliant control size** (same logic as Phase 3 / Phase 6):
    ```python
@@ -40,7 +42,7 @@ For each requested control:
    control_w, control_h = PathManager.compute_layer_size(layout.width, layout.height)
    ```
    This returns a **compliant canvas size matching the control's aspect ratio**.
-4. Take the final refined layer image for that control
+4. Take the final refined layer image for that control (parent layer for repeat-mode)
 5. Determine needed states (hover, active, disabled, focused, checked, etc.)
 
 **Batch generation** (recommended):
@@ -51,6 +53,8 @@ python scripts/generate_variants.py \
   --states hover active disabled \
   --output-dir {variant_dir} --size {control_w}x{control_h} --quality high
 ```
+
+> For **repeat-mode controls**: `{control_layer.png}` is the **parent layer** (e.g., `06-refinement-layers/product_card/product_card_xxx.png`). All instances automatically share the same state variants because they all reference the parent's PNG in `enhanced_layer_plan.json`.
 
 **Individual generation**:
 ```bash

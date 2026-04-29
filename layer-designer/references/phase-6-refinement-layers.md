@@ -59,6 +59,11 @@ For each layer, **preserving the same stacking order from Phase 3**:
    - This returns a **compliant canvas size matching the layer's aspect ratio**, same sizing logic as Phase 3. Both phases use `compute_layer_size(layout.width, layout.height)` with identical inputs, so the canvas dimensions are the same. Only the `quality` tier is higher in Phase 6.
    - For **background layer**: use the full canvas `full_size` from `size_plan.json` (already validated in Phase 1)
    - **NEVER construct a size string manually** without going through `compute_layer_size()` first
+   - For **repeat-mode layers** (`repeat_mode: grid/list`): 
+     - Generate the **parent cell** (`is_repeat_parent: true`) once
+     - Generate the **panel background** (`is_repeat_panel: true`) if `auto_panel.enabled`
+     - **Do NOT generate instance cells** (`is_repeat_instance: true`) — these reuse the parent's PNG
+   - Panel backgrounds do NOT need transparency.
 2. Generate refined layer:
 
 **Element layers** (non-background, requires transparency):

@@ -62,6 +62,11 @@ When the user first invokes this skill, send a structured onboarding message. Do
    - **标准预览**（默认）：early_size ≈ 25–40% 面积，quality = low，成本低、速度快
    - **高质量预览**：early_size ≈ 60% 面积，quality = medium，细节更丰富，适合对精细度要求高的设计
    - **快速通道**：启用后 Phase 1~2 合并，只需确认 1 张预览即可进入分层阶段（默认关闭）
+
+7. 重复元素模式（可选，Phase 2 自动检测）：
+   - 如果设计中有大量重复的相同元素（如卡片网格、图标矩阵、列表项），我会在 Phase 2 自动检测并提示你启用「复用模式」
+   - 复用模式可以大幅减少生成时间和成本（例如 3×3 卡片网格从 9 次生成降到 1 次）
+   - 你也可以提前告诉我是否有重复元素，方便我提前规划
 ━━━━━━━━━━━━━━━━━━━━
 
 你可以逐项回复，也可以一次性提供所有信息。收到后我会立即开始工作。
@@ -82,6 +87,7 @@ Gather the following from the user's response. Use clarifying questions if any i
 | 5 | **Reference image** | Optional | — |
 | 6 | **Preview quality mode** | Optional (default: standard) | "请选择预览质量模式：标准预览（默认）或高质量预览？" |
 | 7 | **Fast workflow** | Optional (default: off) | "是否启用快速通道？（是/否）" |
+| 8 | **Repeat elements** | Optional | "设计中是否有大量重复的相同元素？（如卡片网格、图标矩阵、列表项）" |
 
 **Determine preview quality mode**:
 - User says "高质量" / "high quality" / "细节丰富" → High-Quality Preview mode
@@ -324,6 +330,8 @@ After the user confirms the preview (Step 8 OK):
 | `is_background` | Optional | `true` for background layer |
 | `stack_order` | Optional | Integer position in stack (used if no top-level `stacking_order`) |
 | `states` | Optional | Array of state names (e.g., `["hover", "active"]`) |
+| `repeat_mode` | Optional | `"grid"` or `"list"` — see Phase 2 Step 5 for detection rules |
+| `repeat_config` | Optional | Configuration dict for repeat expansion (see Phase 2) |
 
 **Visual Opacity Judgment** (same as Standard Mode Phase 2 Step 5):
 
@@ -381,7 +389,12 @@ For each layer, visually judge whether it should be **semi-transparent** when st
 
 3. **Save `layer_plan.json`** via `PathManager.get_layer_plan_path()` — no user confirmation needed
 
-4. **Present the layer plan to the user** (informational only, for transparency):
+4. **Detect repeat patterns** (same as Standard Mode Phase 2 Step 5):
+   - Inspect the confirmed preview for grid/list patterns
+   - If detected, present to user and ask for confirmation before applying `repeat_mode`
+   - If user confirmed in Phase 1 Step 2 ("是否有大量重复元素"), use that as a hint but still verify visually
+
+5. **Present the layer plan to the user** (informational only, for transparency):
 ```
 预览已确认。我已自动生成分层方案，即将进入粗稿分层阶段：
 

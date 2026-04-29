@@ -44,6 +44,11 @@ FINE_RADIUS = 12
 # SSD threshold: if best SSD is above this * template_pixels, treat as low confidence
 SSD_CONFIDENCE_THRESHOLD = 20000.0  # per-pixel squared error tolerance (AI gen variance)
 
+# Pyramid pre-screening: ultra-coarse downsample to quickly eliminate bad scales
+COARSE_DOWNSAMPLE = 8
+# Max candidate scales to pass from coarse to fine matching
+COARSE_TOP_K = 3
+
 
 def _get_detection_config(config_path: str | None) -> dict:
     """Load detection settings from config.json with fallback defaults."""
@@ -118,6 +123,99 @@ def _downsample(arr: np.ndarray, factor: int) -> np.ndarray:
     return arr.reshape(h // factor, factor, w // factor, factor).mean(axis=(1, 3))
 
 
+def _ssd_via_fft(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray) -> np.ndarray:
+    """Alpha-weighted SSD map via FFT convolution.
+
+    Computes SSD(y,x) = sum_c sum_{i,j} alpha[i,j]^2 * (I[y+i,x+j,c] - T[i,j,c])^2
+    efficiently using FFT for the cross-correlation terms.
+
+    Returns SSD map of shape (H-h+1, W-w+1).
+    """
+    H, W = roi_rgb.shape[:2]
+    h, w = tpl_rgb.shape[:2]
+
+    alpha_sq = tpl_alpha ** 2  # (h, w)
+
+    # Term 3: template energy (constant)
+    tpl_energy = float(np.sum(alpha_sq[:, :, np.newaxis] * (tpl_rgb ** 2)))
+
+    # Pad size for linear convolution via FFT
+    pad_h = H + h - 1
+    pad_w = W + w - 1
+
+    # Precompute FFT of flipped alpha^2 (reused for term1)
+    alpha_sq_padded = np.zeros((pad_h, pad_w), dtype=np.float64)
+    alpha_sq_padded[:h, :w] = alpha_sq[::-1, ::-1]
+    f_alpha_sq = np.fft.fftn(alpha_sq_padded)
+
+    # Term 1: sum_c conv2d(I_c^2, alpha^2)
+    term1 = np.zeros((pad_h, pad_w), dtype=np.float64)
+    roi_sq_padded = np.zeros((pad_h, pad_w), dtype=np.float64)
+    for c in range(3):
+        roi_sq_padded[:H, :W] = roi_rgb[:, :, c] ** 2
+        f_roi_sq = np.fft.fftn(roi_sq_padded)
+        term1 += np.fft.ifftn(f_roi_sq * f_alpha_sq).real
+        roi_sq_padded[:H, :W] = 0.0
+
+    # Term 2: 2 * sum_c conv2d(I_c, alpha^2 * T_c)
+    cross = np.zeros((pad_h, pad_w), dtype=np.float64)
+    tpl_w_padded = np.zeros((pad_h, pad_w), dtype=np.float64)
+    for c in range(3):
+        roi_padded = np.zeros((pad_h, pad_w), dtype=np.float64)
+        roi_padded[:H, :W] = roi_rgb[:, :, c]
+
+        tpl_w = alpha_sq * tpl_rgb[:, :, c]  # (h, w)
+        tpl_w_padded[:h, :w] = tpl_w[::-1, ::-1]
+
+        f_roi = np.fft.fftn(roi_padded)
+        f_tpl = np.fft.fftn(tpl_w_padded)
+        cross += np.fft.ifftn(f_roi * f_tpl).real
+
+        tpl_w_padded[:h, :w] = 0.0
+
+    # Extract valid region: indices [h-1:H, w-1:W] correspond to positions (0,0) to (H-h, W-w)
+    term1 = term1[h - 1 : H, w - 1 : W]
+    cross = cross[h - 1 : H, w - 1 : W]
+
+    ssd_map = term1 - 2.0 * cross + tpl_energy
+    # Numerical noise may produce tiny negatives; clamp to 0
+    np.maximum(ssd_map, 0.0, out=ssd_map)
+    return ssd_map
+
+
+def _subpixel_refinement(ssd_map: np.ndarray, cy: int, cx: int) -> tuple[float, float]:
+    """Parabolic fit for subpixel minimum estimation on an SSD map.
+
+    Fits a 1D parabola separately in x and y directions using the 3×3
+    neighborhood around (cy, cx). Returns (subpixel_y, subpixel_x) offsets
+    in downsampled coordinates, clamped to [-0.5, 0.5].
+
+    Falls back to (0.0, 0.0) if the minimum is at the boundary or if the
+    parabola opens downward (unreliable fit).
+    """
+    H, W = ssd_map.shape
+    if cy <= 0 or cy >= H - 1 or cx <= 0 or cx >= W - 1:
+        return 0.0, 0.0
+
+    center = ssd_map[cy, cx]
+    left = ssd_map[cy, cx - 1]
+    right = ssd_map[cy, cx + 1]
+    top = ssd_map[cy - 1, cx]
+    bottom = ssd_map[cy + 1, cx]
+
+    # x direction: dx = (left - right) / (2 * (left + right - 2*center))
+    denom_x = 2.0 * (left + right - 2.0 * center)
+    dx = (left - right) / denom_x if denom_x > 0 else 0.0
+    dx = max(-0.5, min(0.5, dx))
+
+    # y direction: dy = (top - bottom) / (2 * (top + bottom - 2*center))
+    denom_y = 2.0 * (top + bottom - 2.0 * center)
+    dy = (top - bottom) / denom_y if denom_y > 0 else 0.0
+    dy = max(-0.5, min(0.5, dy))
+
+    return dy, dx
+
+
 def _match_scale(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray,
                    downsample: int = 4, fine_radius: int = 12) -> tuple:
     """Match a single-scale template inside ROI. Returns (best_y, best_x, best_ssd, valid_pixels)."""
@@ -132,48 +230,44 @@ def _match_scale(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray
     weight = tpl_alpha[:, :, np.newaxis]
     valid_pixels = max(1, int(tpl_alpha.sum()))
 
-    # --- Coarse match at 1/downsample resolution ---
+    # --- Coarse match at 1/downsample resolution via FFT ---
     roi_d = _downsample(roi_rgb, downsample)
-    tpl_d = _downsample(tpl_rgb * weight, downsample)
-    # Alpha also downsampled for proper weighting (squeeze to 2D)
-    w_d = _downsample(weight, downsample).squeeze()
+    tpl_d = _downsample(tpl_rgb, downsample)
+    alpha_d = _downsample(tpl_alpha, downsample)
 
     Hd, Wd = roi_d.shape[:2]
     hd, wd = tpl_d.shape[:2]
     if hd > Hd or wd > Wd:
         return None, None, float("inf"), 0
 
-    # Fast SSD via strided sliding window on downsampled images
-    from numpy.lib.stride_tricks import sliding_window_view
-
-    ssd = np.zeros((Hd - hd + 1, Wd - wd + 1), dtype=np.float64)
-    for c in range(3):
-        patches = sliding_window_view(roi_d[:, :, c], (hd, wd))  # (h_out, w_out, hd, wd)
-        # Both patch and template are multiplied by alpha so transparent
-        # regions contribute exactly zero.
-        diff = patches.astype(np.float64) * w_d - tpl_d[:, :, c].astype(np.float64)
-        ssd += (diff ** 2).sum(axis=(2, 3))
+    # FFT-based alpha-weighted SSD map
+    ssd_map = _ssd_via_fft(roi_d, tpl_d, alpha_d)
 
     # Best coarse position (minimum SSD)
-    cy_d, cx_d = np.unravel_index(np.argmin(ssd), ssd.shape)
-    coarse_ssd = ssd[cy_d, cx_d]
+    cy_d, cx_d = np.unravel_index(np.argmin(ssd_map), ssd_map.shape)
 
-    # --- Fine refinement at original resolution ---
-    cy = cy_d * downsample
-    cx = cx_d * downsample
+    # --- Subpixel refinement via parabolic fit ---
+    sub_y, sub_x = _subpixel_refinement(ssd_map, cy_d, cx_d)
 
-    y_start = max(0, cy - fine_radius)
-    y_end = min(H - h + 1, cy + fine_radius + 1)
-    x_start = max(0, cx - fine_radius)
-    x_end = min(W - w + 1, cx + fine_radius + 1)
+    # Map subpixel position back to original resolution
+    fine_y = int(round((cy_d + sub_y) * downsample))
+    fine_x = int(round((cx_d + sub_x) * downsample))
 
-    best_y, best_x = cy, cx
+    # Clamp to valid search range
+    fine_y = max(0, min(fine_y, H - h))
+    fine_x = max(0, min(fine_x, W - w))
+
+    # --- ±1px confirmation search (safety net) ---
+    best_y, best_x = fine_y, fine_x
     best_ssd = float("inf")
 
-    for y in range(y_start, y_end):
-        for x in range(x_start, x_end):
+    for dy in range(-1, 2):
+        for dx in range(-1, 2):
+            y = fine_y + dy
+            x = fine_x + dx
+            if y < 0 or y > H - h or x < 0 or x > W - w:
+                continue
             patch = roi_rgb[y:y + h, x:x + w]
-            # Alpha-weighted diff: transparent pixels contribute exactly 0
             diff = patch * weight - tpl_rgb * weight
             ssd_val = float(np.sum(diff ** 2))
             if ssd_val < best_ssd:
@@ -204,6 +298,9 @@ def detect_layer(
     layer is opaque, making pixel-level matching unreliable.
     """
     import math
+    import time
+    t_start = time.perf_counter()
+
     px = planned_layout.get("x", 0)
     py = planned_layout.get("y", 0)
     pw = planned_layout.get("width", canvas_w)
@@ -218,6 +315,7 @@ def detect_layer(
             "scale": 1.0,
             "method": "skipped_semitransparent",
             "reason": f"opacity={opacity:.2f} < 0.85",
+            "timing_ms": 0.0,
         }
 
     # Load template (with alpha)
@@ -234,37 +332,99 @@ def detect_layer(
 
     roi_rgb = preview_rgb[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
 
+    # --- Pyramid Level 0: Ultra-coarse pre-screening ---
+    # Optimization: downsample the ORIGINAL template once, then resize only
+    # the downsampled version. Resize area drops by COARSE_DOWNSAMPLE^2 (~64x).
+    t_coarse_start = time.perf_counter()
+    roi_coarse = _downsample(roi_rgb, COARSE_DOWNSAMPLE)
+    tpl_base = _downsample(tpl_rgb, COARSE_DOWNSAMPLE)
+    alpha_base = _downsample(tpl_alpha, COARSE_DOWNSAMPLE)
+    base_h, base_w = tpl_base.shape[:2]
+
+    coarse_scores = []
+    for s in scales:
+        target_w = max(1, int(base_w * s))
+        target_h = max(1, int(base_h * s))
+
+        # Resize downsampled template (area ~64x smaller than original)
+        tpl_coarse = np.array(
+            Image.fromarray(tpl_base.astype(np.uint8)).resize((target_w, target_h), Image.BILINEAR),
+            dtype=np.float32,
+        )
+        alpha_coarse = np.array(
+            Image.fromarray((alpha_base * 255).astype(np.uint8)).resize((target_w, target_h), Image.BILINEAR),
+            dtype=np.float32,
+        ) / 255.0
+        alpha_coarse[alpha_coarse < 0.02] = 0.0
+
+        if alpha_coarse.sum() < 10:
+            continue
+
+        Hc, Wc = roi_coarse.shape[:2]
+        hc, wc = tpl_coarse.shape[:2]
+        if hc > Hc or wc > Wc:
+            continue
+
+        ssd_map = _ssd_via_fft(roi_coarse, tpl_coarse, alpha_coarse)
+        min_ssd = float(ssd_map.min())
+
+        # Store the FULL-resolution resized template for fine matching later.
+        # CRITICAL: use the template's ORIGINAL aspect ratio, NOT the planned size.
+        # Planned size is an estimate; the cropped PNG's actual proportions are the
+        # ground truth for matching. Scaling the original template preserves its
+        # true shape and avoids aspect-ratio distortion that kills matching.
+        tpl_orig_h, tpl_orig_w = tpl_rgb.shape[:2]
+        full_target_w = max(1, int(tpl_orig_w * s))
+        full_target_h = max(1, int(tpl_orig_h * s))
+        tpl_resized = np.array(
+            Image.fromarray(tpl_rgb.astype(np.uint8)).resize((full_target_w, full_target_h), Image.LANCZOS),
+            dtype=np.float32,
+        )
+        alpha_resized = np.array(
+            Image.fromarray((tpl_alpha * 255).astype(np.uint8)).resize((full_target_w, full_target_h), Image.LANCZOS),
+            dtype=np.float32,
+        ) / 255.0
+        alpha_resized[alpha_resized < 0.02] = 0.0
+
+        coarse_scores.append((min_ssd, s, tpl_resized, alpha_resized))
+
+    # Keep top-K candidates (or all if fewer than K)
+    coarse_scores.sort(key=lambda x: x[0])
+    candidate_scales = coarse_scores[:COARSE_TOP_K]
+    t_coarse_elapsed = (time.perf_counter() - t_coarse_start) * 1000
+
+    if not candidate_scales:
+        t_total = (time.perf_counter() - t_start) * 1000
+        return {
+            "detected": {"x": px, "y": py, "width": pw, "height": ph},
+            "planned": {"x": px, "y": py, "width": pw, "height": ph},
+            "ssd": float("inf"),
+            "scale": 1.0,
+            "method": "planned_fallback",
+            "reason": "no_scale_passed_coarse_screening",
+            "timing_ms": round(t_total, 2),
+        }
+
+    # --- Pyramid Level 1: Fine matching on top candidates ---
+    t_fine_start = time.perf_counter()
     best_result = None
     best_ssd = float("inf")
     best_scale = 1.0
     best_valid_pixels = 1
+    scale_timings = []
 
-    for s in scales:
-        target_w = max(1, int(pw * s))
-        target_h = max(1, int(ph * s))
+    for _coarse_ssd, s, tpl_resized, alpha_resized in candidate_scales:
+        t_scale_start = time.perf_counter()
+        match_result = _match_scale(roi_rgb, tpl_resized, alpha_resized,
+                                     downsample=downsample, fine_radius=fine_radius)
+        t_scale_elapsed = (time.perf_counter() - t_scale_start) * 1000
+        scale_timings.append(round(t_scale_elapsed, 2))
 
-        # Resize template to target scale
-        tpl_resized = np.array(
-            Image.fromarray(tpl_rgb.astype(np.uint8)).resize((target_w, target_h), Image.LANCZOS),
-            dtype=np.float32,
-        )
-        alpha_resized = np.array(
-            Image.fromarray((tpl_alpha * 255).astype(np.uint8)).resize((target_w, target_h), Image.LANCZOS),
-            dtype=np.float32,
-        ) / 255.0
-
-        # Clamp alpha: values below 0.02 treated as fully transparent
-        alpha_resized[alpha_resized < 0.02] = 0.0
-
-        # If almost all transparent, skip this scale
-        if alpha_resized.sum() < 10:
-            continue
-
-        match_result = _match_scale(roi_rgb, tpl_resized, alpha_resized, downsample=downsample, fine_radius=fine_radius)
         if match_result[0] is None:
             continue
         my, mx, ssd_val, valid_pixels = match_result
 
+        target_h, target_w = tpl_resized.shape[:2]
         # Cross-scale comparison: normalize by TOTAL pixels + penalties
         total_pixels = max(1, target_h * target_w)
         base_norm = ssd_val / total_pixels
@@ -295,6 +455,9 @@ def detect_layer(
             best_result = (my, mx, target_h, target_w)
             best_valid_pixels = valid_pixels
 
+    t_fine_elapsed = (time.perf_counter() - t_fine_start) * 1000
+    t_total = (time.perf_counter() - t_start) * 1000
+
     # Compute per-pixel SSD for confidence using VALID (non-transparent) pixels
     if best_result is not None:
         _, _, th, tw = best_result
@@ -312,6 +475,7 @@ def detect_layer(
             "scale": 1.0,
             "method": "planned_fallback",
             "reason": "match_failed_or_low_confidence" if best_result is None else "ssd_too_high",
+            "timing_ms": round(t_total, 2),
         }
 
     my, mx, th, tw = best_result
@@ -324,6 +488,12 @@ def detect_layer(
         "ssd": round(per_pixel_ssd, 2),
         "scale": round(best_scale, 3),
         "method": "template_match",
+        "timing_ms": round(t_total, 2),
+        "timing_detail_ms": {
+            "coarse_screening": round(t_coarse_elapsed, 2),
+            "fine_matching": round(t_fine_elapsed, 2),
+            "per_scale": scale_timings,
+        },
     }
 
 
@@ -397,6 +567,41 @@ def detect_all_layers(
         if layer_info.get("is_background", False):
             continue
 
+        # Skip ALL repeat-related layers — grid/list structures are not suitable
+        # for template matching because:
+        #   - instances: preview-only clones, reuse parent PNG
+        #   - parent: one element of a grid, matching a single cell against the
+        #     entire grid area is unreliable
+        #   - panel: container background, usually a simple rectangle with little
+        #     distinctive texture for precise positioning
+        repeat_mode = layer_info.get("repeat_mode")
+        is_repeat = (
+            repeat_mode in ("grid", "list")
+            or layer_info.get("is_repeat_instance", False)
+            or layer_info.get("is_repeat_parent", False)
+            or layer_info.get("is_repeat_panel", False)
+        )
+        if is_repeat:
+            layer_id = layer_info.get("id", "") or layer_info.get("name", "")
+            raw_planned = layer_info.get("layout", {})
+            planned = {
+                "x": int(round(raw_planned.get("x", 0) * layout_scale_x * scale_x)),
+                "y": int(round(raw_planned.get("y", 0) * layout_scale_y * scale_y)),
+                "width": int(round(raw_planned.get("width", canvas_w) * layout_scale_x * scale_x)),
+                "height": int(round(raw_planned.get("height", canvas_h) * layout_scale_y * scale_y)),
+            }
+            results[layer_id] = {
+                "detected": planned,
+                "planned": planned,
+                "ssd": 0.0,
+                "scale": 1.0,
+                "method": "skipped_repeat",
+                "reason": f"repeat_mode={repeat_mode}" if repeat_mode else "repeat-related layer",
+                "timing_ms": 0.0,
+            }
+            print(f"  [SKIP] {layer_id}: repeat layer (mode={repeat_mode}) — uses planned layout")
+            continue
+
         layer_id = layer_info.get("id", "") or layer_info.get("name", "")
         if not layer_id:
             continue
@@ -444,7 +649,14 @@ def detect_all_layers(
             opacity=layer_opacity,
         )
         results[layer_id] = result
-        print(f"    → {result['method']}: detected={result['detected']}, ssd={result['ssd']}, scale={result['scale']}")
+        timing = result.get("timing_ms", 0)
+        timing_detail = result.get("timing_detail_ms", {})
+        print(f"    → {result['method']}: detected={result['detected']}, ssd={result['ssd']}, scale={result['scale']}, time={timing}ms")
+        if timing_detail:
+            print(f"       coarse={timing_detail.get('coarse_screening', 0)}ms, fine={timing_detail.get('fine_matching', 0)}ms, per_scale={timing_detail.get('per_scale', [])}")
+
+    total_time = sum(r.get("timing_ms", 0) for r in results.values())
+    print(f"[TOTAL] All layers detection time: {total_time:.1f}ms")
 
     return {
         "project": project_name,

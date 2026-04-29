@@ -448,6 +448,14 @@ class PathManager:
         """Get path for check report JSON."""
         return self.get_check_dir() / "check_report.json"
 
+    def get_expanded_layer_plan_path(self, phase: str = "check") -> Path:
+        """Get path for expanded_layer_plan.json (repeat_mode expanded)."""
+        if phase == "refinement":
+            return self.get_phase_dir("refinement_layers") / "expanded_layer_plan.json"
+        elif phase == "output":
+            return self.get_output_dir() / "expanded_layer_plan.json"
+        return self.get_check_dir() / "expanded_layer_plan.json"
+
     # Phase 5: Refinement Preview
     def get_refinement_preview_path(self, timestamp_str: str | None = None) -> Path:
         """Get path for high-quality refined preview."""

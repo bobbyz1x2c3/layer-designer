@@ -66,9 +66,9 @@ Phase 8 状态变体      →  generate_variants.py（可选）
 | Phase | 名称 | 输入 | 输出 | 调用脚本 |
 |-------|------|------|------|---------|
 | 1 | Requirements | 用户需求 + 尺寸 | 预览图 + size_plan.json | `validate_size.py`, `generate_image.py` |
-| 2 | Confirmation | 确认预览图 | layer_plan.json（含 layout）+ style_anchor | （视觉分析，无脚本生成） |
+| 2 | Confirmation | 确认预览图 | layer_plan.json（含 layout + repeat_mode）+ style_anchor | （视觉分析，无脚本生成） |
 | 3 | Rough Design | layer_plan.json | 各图层隔离图（early_size）+ layout | `generate_image.py edit` |
-| 4 | Web Composition Check | 图层隔离图 | 网页预览 + 截图 + 校验报告 | `check_transparency.py`, `generate_preview.py` |
+| 4 | Web Composition Check | 图层隔离图 | 网页预览 + 截图 + 校验报告 | `expand_repeats.py`, `check_transparency.py`, `generate_preview.py` |
 | 5 | Refinement Preview | 原始预览图 / Phase 4 截图 | 精修预览（full_size） | `generate_image.py edit` |
 | 6 | Refinement Layers | 精修预览 | 精修图层（full_size）+ layout | `generate_image.py edit`, `check_transparency.py` |
 | 7 | Output | 精修图层 | preview.html + layers/ + manifest.json | `generate_preview.py`（copy + write） |
@@ -111,19 +111,78 @@ Phase 8 状态变体      →  generate_variants.py（可选）
 - 计算 `early_size`（Phase 1~4，默认 0.5× 下采样）和 `full_size`（Phase 5~8）
 - 保存 `01-requirements/size_plan.json`
 
+### `expand_repeats.py` — 展开 repeat_mode 图层
+
+| 参数 | 说明 |
+|------|------|
+| `--project` | 项目名称 |
+| `--input` | 输入 layer_plan.json 路径 |
+| `--output` | 输出 expanded_layer_plan.json 路径 |
+
+- 读取 `layer_plan.json`，检测 `repeat_mode: grid/list` 的图层
+- 根据 `repeat_config` 计算每个实例的独立 layout
+- 输出 `expanded_layer_plan.json`，其中每个实例共享同一个 `source` 路径
+- 在 Phase 4 中由 `generate_preview.py` 自动优先读取
+
+**`repeat_mode` 数据结构**：
+
+```json
+{
+  "repeat_mode": "grid",
+  "repeat_config": {
+    "cols": 3,
+    "rows": 2,
+    "area_layout": {"x": 200, "y": 150},
+    "gap_x": 20,
+    "gap_y": 20,
+    "auto_panel": {
+      "enabled": true,
+      "id": "card_panel",
+      "name": "卡片底板",
+      "description": "White rounded panel background",
+      "opacity": 1.0,
+      "quality_tier": "low"
+    }
+  }
+}
+```
+
+或 list：
+
+```json
+{
+  "repeat_mode": "list",
+  "repeat_config": {
+    "direction": "horizontal",
+    "count": 5,
+    "area_layout": {"x": 100, "y": 300},
+    "gap": 16,
+    "auto_panel": {
+      "enabled": true,
+      "name": "标签栏底板",
+      "description": "Dark bar background"
+    }
+  }
+}
+```
+
+**`auto_panel`**：当 grid/list 有容器背景时启用，自动生成覆盖整个 repeat 区域的 panel 层，置于实例下方。
+
 ### `generate_preview.py` — 生成 enhanced_layer_plan + 预览模板
 
 | 参数 | 说明 |
 |------|------|
 | `--project` | 项目名称 |
-| `--phase check` | Phase 4 使用：读取 `03-rough-design` 图层，生成 `04-check/enhanced_layer_plan.json`，复制预览模板 |
+| `--phase check` | Phase 4 使用：优先读取 `expanded_layer_plan.json`，回退到 `layer_plan.json`，生成 `04-check/enhanced_layer_plan.json`，复制预览模板 |
 | `--phase refinement` | Phase 7 使用：读取 `06-refinement-layers` 图层，生成 `06-refinement-layers/enhanced_layer_plan.json` |
 
-- 读取 `layer_plan.json` 获取 layout 和图层信息
+- 优先读取 `expanded_layer_plan.json`（若存在），否则读取 `layer_plan.json`
+- 对于 `is_repeat_instance` 的图层，从 `parent_id` 对应的目录查找 PNG
 - 扫描图层目录，收集最新 PNG 的资源路径
 - 按 `size_plan.json` 缩放 layout 坐标（rough/check phase）
 - 生成 `enhanced_layer_plan.json`（含 name, content, status, layout, source）
 - 复制通用静态模板 `templates/preview.html` 到输出目录
+- 预览模板支持 repeat 实例的分组显示、🔄 标识、以及编辑面板中的 parent/cell 信息
 
 ### `generate_variants.py` — 状态变体
 

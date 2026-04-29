@@ -73,6 +73,19 @@ Copy refined layers and preview to `07-output/` with stable names (no timestamps
 - Web preview → `preview.html`
 - Each layer → `layers/{layer_name}.png`
 
+**Repeat-mode layer output:**
+
+When copying refined layers from `06-refinement-layers/`, include:
+| Layer Type | Source | Destination |
+|-----------|--------|-------------|
+| Normal layers | `06-refinement-layers/{id}/{id}_*.png` | `07-output/layers/{id}.png` |
+| **Parent** (`is_repeat_parent`) | `06-refinement-layers/{parent_id}/{parent_id}_*.png` | `07-output/layers/{parent_id}.png` |
+| **Panel** (`is_repeat_panel`) | `06-refinement-layers/{panel_id}/{panel_id}_*.png` | `07-output/layers/{panel_id}.png` |
+
+Instance layers do NOT need to be copied — they share the parent's PNG via `source` path in `enhanced_layer_plan.json`.
+
+`generate_preview.py --phase output` automatically sets correct `source` paths for all layer types.
+
 Generate `manifest.json` via `PathManager.write_manifest()`:
 ```json
 {

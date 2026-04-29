@@ -12,6 +12,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", "-p", required=True)
     parser.add_argument("--preview", default=None, help="Preview image path")
+    parser.add_argument("--input", "-i", default=None, help="Detected layouts JSON path (default: 04-check/detected_layouts.json)")
+    parser.add_argument("--output", "-o", default=None, help="Output visualization path")
     args = parser.parse_args()
 
     proj = args.project
@@ -21,7 +23,10 @@ def main():
         candidates = sorted(Path(f"output/{proj}/01-requirements/previews").glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
         preview_path = candidates[0] if candidates else None
 
-    detected_path = Path(f"output/{proj}/04-check/detected_layouts.json")
+    if args.input:
+        detected_path = Path(args.input)
+    else:
+        detected_path = Path(f"output/{proj}/04-check/detected_layouts.json")
 
     preview = Image.open(preview_path).convert("RGB")
     draw = ImageDraw.Draw(preview)
@@ -51,7 +56,11 @@ def main():
         draw.text((detected["x"], max(0, detected["y"] - 10)), layer_id, fill="lime")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = Path(f"output/{proj}/04-check/detection_viz_{timestamp}.png")
+    if args.output:
+        output_path = Path(args.output)
+    else:
+        suffix = "_fft" if "fft" in str(detected_path).lower() else ""
+        output_path = Path(f"output/{proj}/04-check/detection_viz{suffix}_{timestamp}.png")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     preview.save(output_path)
     print(f"Saved: {output_path}")

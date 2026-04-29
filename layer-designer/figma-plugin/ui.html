@@ -428,14 +428,12 @@
       collectedFiles.pngs = allFolderFiles.filter(f => f.name.toLowerCase().endsWith('.png'));
 
       // Count how many layers can be matched (for summary display)
+      // Note: do not deduplicate by path because repeat instances may share the same PNG
       let matchedCount = 0;
-      const usedPaths = new Set();
       for (const layer of (plan.layers || [])) {
-        const candidates = collectedFiles.pngs.filter(f => !usedPaths.has(f.webkitRelativePath));
-        const match = findBestMatchFile(layer, candidates);
+        const match = findBestMatchFile(layer, collectedFiles.pngs);
         if (match) {
           matchedCount++;
-          usedPaths.add(match.webkitRelativePath);
         }
       }
 

@@ -89,6 +89,11 @@
     }
     .layer:active { cursor: grabbing; }
     .layer.selected { outline: 2px solid #3b82f6; z-index: 9999 !important; }
+    .layer.is-panel {
+      outline: 1px dashed #64748b;
+      background: rgba(30, 41, 59, 0.3);
+    }
+    .layer.is-panel.selected { outline: 2px solid #f59e0b; }
     .layer img {
       width: 100%;
       height: 100%;
@@ -358,9 +363,13 @@
       const layers = [...(data.layers || [])].sort((a, b) => (orderMap[a.name] || 0) - (orderMap[b.name] || 0));
 
       layers.forEach((layer, idx) => {
+        // Skip repeat parent layers — they are generation templates only
+        if (layer.is_repeat_parent) return;
+
         const l = layer.layout || {};
         const el = document.createElement('div');
         el.className = 'layer';
+        if (layer.is_repeat_panel) el.classList.add('is-panel');
         el.dataset.name = layer.name;
         el.style.left = (l.x || 0) + 'px';
         el.style.top = (l.y || 0) + 'px';
@@ -388,7 +397,8 @@
 
         const label = document.createElement('div');
         label.className = 'layer-label';
-        label.textContent = layer.name;
+        const repeatBadge = layer.is_repeat_instance ? '🔄 ' : '';
+        label.textContent = repeatBadge + layer.name;
 
         const handles = ['nw','n','ne','w','e','sw','s','se'].map(dir =>
           `<div class="resize-handle ${dir}" data-dir="${dir}"></div>`
@@ -403,14 +413,11 @@
         // Events
         el.addEventListener('mousedown', onLayerMouseDown);
 
-        // Layer tag
-        const tag = document.createElement('button');
-        tag.className = 'layer-tag';
-        tag.textContent = layer.name;
-        tag.dataset.name = layer.name;
-        tag.onclick = () => selectLayer(layer.name);
-        layerList.appendChild(tag);
+        // Layer tags will be built after the loop for grouping
       });
+
+      // Build layer list with repeat instance grouping
+      buildLayerList(layers);
 
       // Resize handle events
       canvas.querySelectorAll('.resize-handle').forEach(h => {
@@ -546,6 +553,81 @@
     }
 
     // ─── Editor Panel ───
+    function buildLayerList(layers) {
+      layerList.innerHTML = '';
+
+      // Separate repeat instances from regular layers (skip parent templates)
+      const regularLayers = layers.filter(l => !l.is_repeat_instance && !l.is_repeat_parent);
+      const repeatGroups = {};
+      layers.forEach(l => {
+        if (l.is_repeat_instance && l.parent_id) {
+          if (!repeatGroups[l.parent_id]) repeatGroups[l.parent_id] = [];
+          repeatGroups[l.parent_id].push(l);
+        }
+      });
+
+      // Regular layers first
+      regularLayers.forEach(layer => {
+        const tag = createLayerTag(layer);
+        layerList.appendChild(tag);
+      });
+
+      // Then repeat groups
+      Object.entries(repeatGroups).forEach(([parentId, instances]) => {
+        const group = document.createElement('div');
+        group.style.cssText = 'display:flex; flex-direction:column; gap:4px; margin:4px 0;';
+
+        const firstInst = instances[0];
+        const displayParent = firstInst.parent_name || parentId;
+
+        const header = document.createElement('button');
+        header.className = 'layer-tag';
+        header.style.cssText = 'background:#1e3a5f; border-color:#2563eb; width:auto; text-align:left;';
+        header.textContent = `🔄 ${displayParent} (${instances.length})`;
+        let collapsed = false;
+        header.onclick = () => {
+          collapsed = !collapsed;
+          itemsDiv.style.display = collapsed ? 'none' : 'flex';
+          header.textContent = (collapsed ? '▶' : '▼') + ` 🔄 ${parentId} (${instances.length})`;
+        };
+        group.appendChild(header);
+
+        const itemsDiv = document.createElement('div');
+        itemsDiv.style.cssText = 'display:flex; flex-wrap:wrap; gap:4px; padding-left:12px;';
+        instances.forEach(layer => {
+          const tag = createLayerTag(layer);
+          itemsDiv.appendChild(tag);
+        });
+        group.appendChild(itemsDiv);
+        layerList.appendChild(group);
+      });
+    }
+
+    function createLayerTag(layer) {
+      const tag = document.createElement('button');
+      tag.className = 'layer-tag';
+      let prefix = '';
+      if (layer.is_repeat_panel) prefix = '📋 ';
+      else if (layer.is_repeat_instance) prefix = '🔄 ';
+      tag.textContent = prefix + layer.name;
+      if (layer.is_repeat_panel) {
+        tag.style.background = '#1e3a5f';
+        tag.style.borderColor = '#f59e0b';
+      }
+      tag.dataset.name = layer.name;
+      tag.onclick = () => selectLayer(layer.name);
+      return tag;
+    }
+
+    function getRepeatParent(layer) {
+      if (!layer || !data) return null;
+      let pid = '';
+      if (layer.is_repeat_instance) pid = layer.parent_id || '';
+      else if (layer.is_repeat_panel) pid = layer.repeat_parent_id || '';
+      if (!pid) return null;
+      return (data.layers || []).find(l => l.is_repeat_parent && (l.id === pid || l.name === pid));
+    }
+
     function updateEditor() {
       if (!selectedName || !data) {
         editorPanel.innerHTML = '<h3>📝 Layer Properties</h3><div class="empty">Select a layer to edit its properties</div>';
@@ -554,9 +636,80 @@
       const layer = (data.layers || []).find(l => l.name === selectedName);
       if (!layer) return;
       const l = layer.layout || {};
+
+      let repeatInfo = '';
+      if (layer.is_repeat_panel) {
+        repeatInfo = `
+          <div style="background:#3f2e1e; border:1px solid #f59e0b; border-radius:6px; padding:8px; margin-bottom:10px; font-size:11px;">
+            <div style="color:#fbbf24; font-weight:600;">📋 Panel Background</div>
+            <div style="color:#94a3b8; margin-top:4px;">Parent: <strong>${esc(layer.repeat_parent_id || '')}</strong></div>
+            <div style="color:#94a3b8;">Container for repeat instances</div>
+          </div>
+        `;
+      } else if (layer.is_repeat_instance) {
+        const mode = layer.repeat_mode === 'grid'
+          ? `Grid cell (${layer.cell_row + 1},${layer.cell_col + 1})`
+          : `List item [${layer.cell_index + 1}]`;
+        repeatInfo = `
+          <div style="background:#1e3a5f; border:1px solid #2563eb; border-radius:6px; padding:8px; margin-bottom:10px; font-size:11px;">
+            <div style="color:#60a5fa; font-weight:600;">🔄 Repeat Instance</div>
+            <div style="color:#94a3b8; margin-top:4px;">Parent: <strong>${esc(layer.parent_id || '')}</strong></div>
+            <div style="color:#94a3b8;">${mode}</div>
+          </div>
+        `;
+      }
+
+      // Repeat config editor (shown for instances and panels)
+      let repeatConfigHTML = '';
+      const parent = getRepeatParent(layer);
+      if (parent) {
+        const config = parent.repeat_config || {};
+        const area = config.area_layout || {};
+        const mode = parent.repeat_mode || 'grid';
+        const pLayout = parent.layout || {};
+        const areaX = area.x !== undefined ? area.x : pLayout.x || 0;
+        const areaY = area.y !== undefined ? area.y : pLayout.y || 0;
+        if (mode === 'grid') {
+          repeatConfigHTML = `
+            <div style="background:#1e3a2f; border:1px solid #22c55e; border-radius:6px; padding:8px; margin-bottom:10px; font-size:11px;">
+              <div style="color:#4ade80; font-weight:600;">🔧 Repeat Config (Grid)</div>
+              <div class="row" style="margin-top:6px;">
+                <div class="field" style="margin-bottom:0;"><label>Gap X</label><input type="number" id="rcGapX" value="${config.gap_x || 0}"></div>
+                <div class="field" style="margin-bottom:0;"><label>Gap Y</label><input type="number" id="rcGapY" value="${config.gap_y || 0}"></div>
+              </div>
+              <div class="row" style="margin-top:6px;">
+                <div class="field" style="margin-bottom:0;"><label>Area X</label><input type="number" id="rcAreaX" value="${areaX}"></div>
+                <div class="field" style="margin-bottom:0;"><label>Area Y</label><input type="number" id="rcAreaY" value="${areaY}"></div>
+              </div>
+              <div style="margin-top:8px;">
+                <button onclick="applyRepeatConfig()" style="background:#15803d; border:1px solid #22c55e; color:#fff; padding:5px 12px; border-radius:6px; font-size:11px; cursor:pointer;">Apply to Group</button>
+              </div>
+            </div>
+          `;
+        } else if (mode === 'list') {
+          repeatConfigHTML = `
+            <div style="background:#1e3a2f; border:1px solid #22c55e; border-radius:6px; padding:8px; margin-bottom:10px; font-size:11px;">
+              <div style="color:#4ade80; font-weight:600;">🔧 Repeat Config (List)</div>
+              <div class="row" style="margin-top:6px;">
+                <div class="field" style="margin-bottom:0;"><label>Gap</label><input type="number" id="rcGap" value="${config.gap || 0}"></div>
+              </div>
+              <div class="row" style="margin-top:6px;">
+                <div class="field" style="margin-bottom:0;"><label>Area X</label><input type="number" id="rcAreaX" value="${areaX}"></div>
+                <div class="field" style="margin-bottom:0;"><label>Area Y</label><input type="number" id="rcAreaY" value="${areaY}"></div>
+              </div>
+              <div style="margin-top:8px;">
+                <button onclick="applyRepeatConfig()" style="background:#15803d; border:1px solid #22c55e; color:#fff; padding:5px 12px; border-radius:6px; font-size:11px; cursor:pointer;">Apply to Group</button>
+              </div>
+            </div>
+          `;
+        }
+      }
+
       editorPanel.innerHTML = `
         <h3>📝 Layer Properties</h3>
-        <div class="field"><label>Name</label><input type="text" id="edName" value="${esc(layer.name)}" onchange="updateProp('name', this.value)"></div>
+        ${repeatInfo}
+        ${repeatConfigHTML}
+        <div class="field"><label>Name</label><input type="text" id="edName" value="${esc(layer.name)}" onchange="updateProp('name', this.value)" ${layer.is_repeat_instance ? 'readonly style="opacity:0.6;"' : ''}></div>
         <div class="field"><label>Content</label><input type="text" id="edContent" value="${esc(layer.content || '')}" onchange="updateProp('content', this.value)"></div>
         <div class="field"><label>Status</label><input type="text" id="edStatus" value="${esc(layer.status || '')}" onchange="updateProp('status', this.value)"></div>
         <div class="row">
@@ -572,6 +725,113 @@
           </button>
         </div>
       `;
+    }
+
+    function recomputeRepeatLayouts(parentId) {
+      const parent = data.layers.find(l => l.is_repeat_parent && (l.id === parentId || l.name === parentId));
+      if (!parent) return;
+
+      const config = parent.repeat_config || {};
+      const mode = parent.repeat_mode || 'grid';
+      const parentLayout = parent.layout || {};
+      const cellW = parentLayout.width || 100;
+      const cellH = parentLayout.height || 100;
+      const area = config.area_layout || {};
+      const startX = area.x !== undefined ? area.x : parentLayout.x || 0;
+      const startY = area.y !== undefined ? area.y : parentLayout.y || 0;
+
+      data.layers.forEach(layer => {
+        if (layer.is_repeat_instance && (layer.parent_id === parentId || layer.parent_name === parentId)) {
+          const row = layer.cell_row || 0;
+          const col = layer.cell_col || 0;
+          const idx = layer.cell_index || 0;
+          layer.layout = layer.layout || {};
+
+          if (mode === 'grid') {
+            const gapX = config.gap_x || 0;
+            const gapY = config.gap_y || 0;
+            layer.layout.x = startX + col * (cellW + gapX);
+            layer.layout.y = startY + row * (cellH + gapY);
+            layer.layout.width = cellW;
+            layer.layout.height = cellH;
+          } else if (mode === 'list') {
+            const gap = config.gap || 0;
+            const direction = config.direction || 'horizontal';
+            if (direction === 'horizontal') {
+              layer.layout.x = startX + idx * (cellW + gap);
+              layer.layout.y = startY;
+            } else {
+              layer.layout.x = startX;
+              layer.layout.y = startY + idx * (cellH + gap);
+            }
+            layer.layout.width = cellW;
+            layer.layout.height = cellH;
+          }
+        }
+
+        if (layer.is_repeat_panel && layer.repeat_parent_id === parentId) {
+          layer.layout = layer.layout || {};
+          if (mode === 'grid') {
+            const cols = config.cols || 1;
+            const rows = config.rows || 1;
+            const gapX = config.gap_x || 0;
+            const gapY = config.gap_y || 0;
+            layer.layout.x = startX;
+            layer.layout.y = startY;
+            layer.layout.width = cols * cellW + Math.max(0, cols - 1) * gapX;
+            layer.layout.height = rows * cellH + Math.max(0, rows - 1) * gapY;
+          } else if (mode === 'list') {
+            const count = config.count || 1;
+            const gap = config.gap || 0;
+            const direction = config.direction || 'horizontal';
+            if (direction === 'horizontal') {
+              layer.layout.x = startX;
+              layer.layout.y = startY;
+              layer.layout.width = count * cellW + Math.max(0, count - 1) * gap;
+              layer.layout.height = cellH;
+            } else {
+              layer.layout.x = startX;
+              layer.layout.y = startY;
+              layer.layout.width = cellW;
+              layer.layout.height = count * cellH + Math.max(0, count - 1) * gap;
+            }
+          }
+        }
+      });
+    }
+
+    function applyRepeatConfig() {
+      if (!selectedName || !data) return;
+      const layer = (data.layers || []).find(l => l.name === selectedName);
+      const parent = getRepeatParent(layer);
+      if (!parent) return;
+
+      const config = parent.repeat_config || {};
+      const mode = parent.repeat_mode || 'grid';
+
+      if (mode === 'grid') {
+        const gapXEl = document.getElementById('rcGapX');
+        const gapYEl = document.getElementById('rcGapY');
+        const areaXEl = document.getElementById('rcAreaX');
+        const areaYEl = document.getElementById('rcAreaY');
+        if (gapXEl) { const v = parseInt(gapXEl.value); if (!isNaN(v)) config.gap_x = v; }
+        if (gapYEl) { const v = parseInt(gapYEl.value); if (!isNaN(v)) config.gap_y = v; }
+        if (areaXEl) { const v = parseInt(areaXEl.value); if (!isNaN(v)) { config.area_layout = config.area_layout || {}; config.area_layout.x = v; } }
+        if (areaYEl) { const v = parseInt(areaYEl.value); if (!isNaN(v)) { config.area_layout = config.area_layout || {}; config.area_layout.y = v; } }
+      } else if (mode === 'list') {
+        const gapEl = document.getElementById('rcGap');
+        const areaXEl = document.getElementById('rcAreaX');
+        const areaYEl = document.getElementById('rcAreaY');
+        if (gapEl) { const v = parseInt(gapEl.value); if (!isNaN(v)) config.gap = v; }
+        if (areaXEl) { const v = parseInt(areaXEl.value); if (!isNaN(v)) { config.area_layout = config.area_layout || {}; config.area_layout.x = v; } }
+        if (areaYEl) { const v = parseInt(areaYEl.value); if (!isNaN(v)) { config.area_layout = config.area_layout || {}; config.area_layout.y = v; } }
+      }
+      parent.repeat_config = config;
+
+      recomputeRepeatLayouts(parent.id || parent.name);
+      renderAll();
+      selectLayer(selectedName);
+      status('Repeat config applied to group', 'ok');
     }
 
     function updateProp(key, value) {

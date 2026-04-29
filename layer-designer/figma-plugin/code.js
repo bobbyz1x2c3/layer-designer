@@ -84,6 +84,223 @@ function base64ToUint8Array(base64) {
 }
 
 /**
+ * Create a Figma rectangle node for a single layer.
+ */
+async function createLayerNode(layer, images) {
+  const rect = figma.createRectangle();
+  rect.name = layer.name || layer.id || 'Layer';
+  rect.x = layer.layout.x;
+  rect.y = layer.layout.y;
+  rect.resize(layer.layout.width, layer.layout.height);
+  rect.opacity = layer.opacity !== undefined ? layer.opacity : 1;
+  if (layer.id) {
+    rect.setPluginData('layerId', layer.id);
+  }
+
+  const layerId = layer.id || (layer.source ? layer.source.split('/').pop().replace(/\.png$/i, '') : layer.name);
+  const imageData = findImageForLayer(layerId, layer.name, images, layer.source);
+
+  if (imageData) {
+    try {
+      const image = figma.createImage(imageData);
+      rect.fills = [{
+        type: 'IMAGE',
+        imageHash: image.hash,
+        scaleMode: 'FIT'
+      }];
+    } catch (imgErr) {
+      const isBg = layer.is_background;
+      rect.fills = [{
+        type: 'SOLID',
+        color: isBg ? { r: 0.1, g: 0.1, b: 0.15 } : { r: 0.9, g: 0.2, b: 0.2 },
+        opacity: isBg ? 1.0 : 0.3
+      }];
+    }
+  } else {
+    const isBg = layer.is_background;
+    rect.fills = [{
+      type: 'SOLID',
+      color: isBg ? { r: 0.1, g: 0.1, b: 0.15 } : { r: 0.2, g: 0.6, b: 1.0 },
+      opacity: isBg ? 1.0 : 0.15
+    }];
+  }
+
+  rect.strokeWeight = 1;
+  rect.strokes = [{ type: 'SOLID', color: { r: 0.3, g: 0.8, b: 1.0 }, opacity: 0.3 }];
+
+  return rect;
+}
+
+/**
+ * Create an Auto Layout container for a repeat group (grid or list).
+ */
+async function createRepeatAutoLayout(parentFrame, group, images) {
+  const { instances, panel, parentLayer } = group;
+  if (!instances.length || !parentLayer) return;
+
+  const config = parentLayer.repeat_config || {};
+  const mode = parentLayer.repeat_mode || 'list';
+
+  // Create container frame
+  const container = figma.createFrame();
+  container.name = parentLayer.name || parentLayer.id || 'Repeat Group';
+
+  const baseX = panel ? panel.layout.x : instances[0].layout.x;
+  const baseY = panel ? panel.layout.y : instances[0].layout.y;
+  container.x = baseX;
+  container.y = baseY;
+
+  let containerW, containerH;
+  if (panel) {
+    containerW = panel.layout.width;
+    containerH = panel.layout.height;
+  } else {
+    let maxRight = 0, maxBottom = 0;
+    for (const inst of instances) {
+      maxRight = Math.max(maxRight, inst.layout.x + inst.layout.width - baseX);
+      maxBottom = Math.max(maxBottom, inst.layout.y + inst.layout.height - baseY);
+    }
+    containerW = maxRight || instances[0].layout.width;
+    containerH = maxBottom || instances[0].layout.height;
+  }
+  container.resize(containerW, containerH);
+  container.fills = [];
+  container.clipsContent = false;
+
+  // Add panel background if exists
+  if (panel) {
+    const panelNode = await createLayerNode(panel, images);
+    panelNode.x = 0;
+    panelNode.y = 0;
+    panelNode.resize(panel.layout.width, panel.layout.height);
+    container.appendChild(panelNode);
+  }
+
+  // Create auto layout frame for instances
+  const autoFrame = figma.createFrame();
+  autoFrame.name = 'Instances';
+  autoFrame.x = panel ? (instances[0].layout.x - baseX) : 0;
+  autoFrame.y = panel ? (instances[0].layout.y - baseY) : 0;
+  autoFrame.fills = [];
+  autoFrame.clipsContent = false;
+
+  const cellW = instances[0].layout.width;
+  const cellH = instances[0].layout.height;
+
+  // Helper to add a node with fixed sizing into auto layout
+  async function addFixedNode(targetFrame, layer) {
+    const node = await createLayerNode(layer, images);
+    node.layoutSizingHorizontal = 'FIXED';
+    node.layoutSizingVertical = 'FIXED';
+    targetFrame.appendChild(node);
+  }
+
+  if (mode === 'list') {
+    const direction = config.direction || 'horizontal';
+    const gap = config.gap || 0;
+    autoFrame.layoutMode = direction === 'horizontal' ? 'HORIZONTAL' : 'VERTICAL';
+    autoFrame.primaryAxisAlignItems = 'MIN';
+    autoFrame.counterAxisAlignItems = 'MIN';
+    autoFrame.itemSpacing = gap;
+    autoFrame.paddingLeft = autoFrame.paddingRight = autoFrame.paddingTop = autoFrame.paddingBottom = 0;
+
+    for (const inst of instances) {
+      await addFixedNode(autoFrame, inst);
+    }
+
+    autoFrame.primaryAxisSizingMode = 'FIXED';
+    autoFrame.counterAxisSizingMode = 'FIXED';
+    autoFrame.resize(
+      direction === 'horizontal'
+        ? instances.length * cellW + Math.max(0, instances.length - 1) * gap
+        : cellW,
+      direction === 'horizontal'
+        ? cellH
+        : instances.length * cellH + Math.max(0, instances.length - 1) * gap
+    );
+  } else if (mode === 'grid') {
+    const cols = config.cols || 1;
+    const rows = config.rows || 1;
+    const gapX = config.gap_x || 0;
+    const gapY = config.gap_y || 0;
+
+    if (cols === 1 && rows === 1) {
+      autoFrame.layoutMode = 'HORIZONTAL';
+      autoFrame.itemSpacing = 0;
+      await addFixedNode(autoFrame, instances[0]);
+      autoFrame.resize(cellW, cellH);
+    } else if (cols === 1) {
+      autoFrame.layoutMode = 'VERTICAL';
+      autoFrame.primaryAxisAlignItems = 'MIN';
+      autoFrame.counterAxisAlignItems = 'MIN';
+      autoFrame.itemSpacing = gapY;
+      autoFrame.paddingLeft = autoFrame.paddingRight = autoFrame.paddingTop = autoFrame.paddingBottom = 0;
+      for (const inst of instances) {
+        await addFixedNode(autoFrame, inst);
+      }
+      autoFrame.resize(cellW, rows * cellH + Math.max(0, rows - 1) * gapY);
+    } else if (rows === 1) {
+      autoFrame.layoutMode = 'HORIZONTAL';
+      autoFrame.primaryAxisAlignItems = 'MIN';
+      autoFrame.counterAxisAlignItems = 'MIN';
+      autoFrame.itemSpacing = gapX;
+      autoFrame.paddingLeft = autoFrame.paddingRight = autoFrame.paddingTop = autoFrame.paddingBottom = 0;
+      for (const inst of instances) {
+        await addFixedNode(autoFrame, inst);
+      }
+      autoFrame.resize(cols * cellW + Math.max(0, cols - 1) * gapX, cellH);
+    } else {
+      // Nested grid: outer VERTICAL, inner HORIZONTAL per row
+      autoFrame.layoutMode = 'VERTICAL';
+      autoFrame.primaryAxisAlignItems = 'MIN';
+      autoFrame.counterAxisAlignItems = 'MIN';
+      autoFrame.itemSpacing = gapY;
+      autoFrame.paddingLeft = autoFrame.paddingRight = autoFrame.paddingTop = autoFrame.paddingBottom = 0;
+
+      for (let r = 0; r < rows; r++) {
+        const rowFrame = figma.createFrame();
+        rowFrame.name = `Row ${r + 1}`;
+        rowFrame.layoutMode = 'HORIZONTAL';
+        rowFrame.primaryAxisAlignItems = 'MIN';
+        rowFrame.counterAxisAlignItems = 'MIN';
+        rowFrame.itemSpacing = gapX;
+        rowFrame.paddingLeft = rowFrame.paddingRight = rowFrame.paddingTop = rowFrame.paddingBottom = 0;
+        rowFrame.fills = [];
+        rowFrame.clipsContent = false;
+
+        const rowInstances = instances.filter(inst => (inst.cell_row || 0) === r);
+        for (const inst of rowInstances) {
+          await addFixedNode(rowFrame, inst);
+        }
+
+        // Fix row frame size explicitly so it doesn't collapse to default 100
+        rowFrame.primaryAxisSizingMode = 'FIXED';
+        rowFrame.counterAxisSizingMode = 'FIXED';
+        rowFrame.resize(
+          cols * cellW + Math.max(0, cols - 1) * gapX,
+          cellH
+        );
+
+        autoFrame.appendChild(rowFrame);
+      }
+
+      autoFrame.primaryAxisSizingMode = 'FIXED';
+      autoFrame.counterAxisSizingMode = 'FIXED';
+      autoFrame.resize(
+        cols * cellW + Math.max(0, cols - 1) * gapX,
+        rows * cellH + Math.max(0, rows - 1) * gapY
+      );
+    }
+
+    autoFrame.primaryAxisSizingMode = 'FIXED';
+    autoFrame.counterAxisSizingMode = 'FIXED';
+  }
+
+  container.appendChild(autoFrame);
+  parentFrame.appendChild(container);
+}
+
+/**
  * Main import function.
  * @param {object} plan - Parsed layer_plan.json content
  * @param {Record<string, Uint8Array>} images - Map of image name -> PNG bytes
@@ -102,8 +319,9 @@ async function importLayers(plan, images) {
   frame.x = center.x - plan.dimensions.width / 2;
   frame.y = center.y - plan.dimensions.height / 2;
 
-  // Build a lookup map from layer id -> layer data
+  // Build a lookup map from layer id/name -> layer data
   // Falls back to source basename if id is missing
+  // Also indexes by name because stacking_order may use names (repeat instances/panels)
   const layerMap = new Map();
   for (const layer of plan.layers) {
     let key = layer.id;
@@ -112,6 +330,9 @@ async function importLayers(plan, images) {
     }
     if (key) {
       layerMap.set(key, layer);
+    }
+    if (layer.name && layer.name !== key) {
+      layerMap.set(layer.name, layer);
     }
   }
   console.log('[LayerImporter] layerMap keys:', Array.from(layerMap.keys()));
@@ -125,67 +346,105 @@ async function importLayers(plan, images) {
 
   console.log('[LayerImporter] sortedLayers:', sortedLayers.length, 'of', plan.layers.length);
 
+  // Pre-process repeat groups from all layers (including parents not in stacking_order)
+  const repeatGroups = {};
+  for (const layer of plan.layers || []) {
+    if (layer.is_repeat_instance && layer.parent_id) {
+      if (!repeatGroups[layer.parent_id]) {
+        repeatGroups[layer.parent_id] = { instances: [], panel: null, parentLayer: null };
+      }
+      repeatGroups[layer.parent_id].instances.push(layer);
+    } else if (layer.is_repeat_panel && layer.repeat_parent_id) {
+      if (!repeatGroups[layer.repeat_parent_id]) {
+        repeatGroups[layer.repeat_parent_id] = { instances: [], panel: null, parentLayer: null };
+      }
+      repeatGroups[layer.repeat_parent_id].panel = layer;
+    } else if (layer.is_repeat_parent) {
+      const pid = layer.id || layer.name;
+      if (!repeatGroups[pid]) {
+        repeatGroups[pid] = { instances: [], panel: null, parentLayer: layer };
+      } else {
+        repeatGroups[pid].parentLayer = layer;
+      }
+    }
+  }
+  // Sort instances by cell_index within each group
+  for (const group of Object.values(repeatGroups)) {
+    group.instances.sort((a, b) => (a.cell_index || 0) - (b.cell_index || 0));
+  }
+
   let importedCount = 0;
   let missingCount = 0;
   let errorCount = 0;
+  let autoLayoutCount = 0;
+  const processedNames = new Set();
 
   for (let i = 0; i < sortedLayers.length; i++) {
     const layer = sortedLayers[i];
-    try {
-      const rect = figma.createRectangle();
-      rect.name = layer.name || layer.id || 'Layer';
-      rect.x = layer.layout.x;
-      rect.y = layer.layout.y;
-      rect.resize(layer.layout.width, layer.layout.height);
-      rect.opacity = layer.opacity !== undefined ? layer.opacity : 1;
-      // Store original id so export can recover it even if name is localized
-      if (layer.id) {
-        rect.setPluginData('layerId', layer.id);
-      }
 
-      // Attempt to find a matching image (pass source for path-based lookup)
-      const layerId = layer.id || (layer.source ? layer.source.split('/').pop().replace(/\.png$/i, '') : layer.name);
-      const imageData = findImageForLayer(layerId, layer.name, images, layer.source);
+    // Skip if already processed as part of a repeat group
+    if (processedNames.has(layer.name)) continue;
 
-      if (imageData) {
+    // Check if this layer belongs to a repeat group
+    let groupKey = null;
+    if (layer.is_repeat_instance && layer.parent_id && repeatGroups[layer.parent_id]) {
+      groupKey = layer.parent_id;
+    } else if (layer.is_repeat_panel && layer.repeat_parent_id && repeatGroups[layer.repeat_parent_id]) {
+      groupKey = layer.repeat_parent_id;
+    }
+
+    if (groupKey && !processedNames.has('__group__' + groupKey)) {
+      processedNames.add('__group__' + groupKey);
+      const group = repeatGroups[groupKey];
+
+      // Create auto layout only if parent metadata is available
+      if (group.parentLayer && group.instances.length > 0) {
         try {
-          console.log('[LayerImporter]   creating image for', layer.name || layerId, 'bytes:', imageData.length);
-          const image = figma.createImage(imageData);
-          rect.fills = [{
-            type: 'IMAGE',
-            imageHash: image.hash,
-            scaleMode: 'FIT'
-          }];
-          importedCount++;
-          console.log('[LayerImporter]   ✓ image created for', layer.name || layerId);
-        } catch (imgErr) {
-          console.error('[LayerImporter]   ✗ createImage failed for', layer.name || layerId, ':', imgErr.message);
-          figma.notify('Image error for ' + (layer.name || layerId) + ': ' + imgErr.message, { error: true });
-          // Fallback to placeholder
-          const isBg = layer.is_background;
-          rect.fills = [{
-            type: 'SOLID',
-            color: isBg ? { r: 0.1, g: 0.1, b: 0.15 } : { r: 0.9, g: 0.2, b: 0.2 },
-            opacity: isBg ? 1.0 : 0.3
-          }];
+          await createRepeatAutoLayout(frame, group, images);
+          autoLayoutCount++;
+          // Mark all group members as processed
+          for (const inst of group.instances) processedNames.add(inst.name);
+          if (group.panel) processedNames.add(group.panel.name);
+          // Count image imports for stats
+          for (const inst of group.instances) {
+            const layerId = inst.id || (inst.source ? inst.source.split('/').pop().replace(/\.png$/i, '') : inst.name);
+            if (findImageForLayer(layerId, inst.name, images, inst.source)) {
+              importedCount++;
+            } else {
+              missingCount++;
+            }
+          }
+          if (group.panel) {
+            const panelId = group.panel.id || (group.panel.source ? group.panel.source.split('/').pop().replace(/\.png$/i, '') : group.panel.name);
+            if (findImageForLayer(panelId, group.panel.name, images, group.panel.source)) {
+              importedCount++;
+            } else {
+              missingCount++;
+            }
+          }
+          continue;
+        } catch (groupErr) {
+          console.error('[LayerImporter]   ✗ repeat group error for', groupKey, ':', groupErr.message);
+          figma.notify('Repeat group error: ' + groupKey + ' - ' + groupErr.message, { error: true });
           errorCount++;
+          // Fall through to individual processing below
         }
+      }
+      // No parentLayer or group creation failed: process members individually below
+    }
+
+    // Normal layer processing (also handles repeat members when not in auto layout)
+    try {
+      const rect = await createLayerNode(layer, images);
+      frame.appendChild(rect);
+
+      // Count for stats
+      const layerId = layer.id || (layer.source ? layer.source.split('/').pop().replace(/\.png$/i, '') : layer.name);
+      if (findImageForLayer(layerId, layer.name, images, layer.source)) {
+        importedCount++;
       } else {
-        // Placeholder: semi-transparent tint to indicate missing image
-        const isBg = layer.is_background;
-        rect.fills = [{
-          type: 'SOLID',
-          color: isBg ? { r: 0.1, g: 0.1, b: 0.15 } : { r: 0.2, g: 0.6, b: 1.0 },
-          opacity: isBg ? 1.0 : 0.15
-        }];
         missingCount++;
       }
-
-      // Add a subtle border for visibility
-      rect.strokeWeight = 1;
-      rect.strokes = [{ type: 'SOLID', color: { r: 0.3, g: 0.8, b: 1.0 }, opacity: 0.3 }];
-
-      frame.appendChild(rect);
     } catch (layerErr) {
       console.error('[LayerImporter]   ✗ layer error for', layer.name || layer.id, ':', layerErr.message);
       figma.notify('Layer error: ' + (layer.name || layer.id) + ' - ' + layerErr.message, { error: true });
@@ -197,7 +456,7 @@ async function importLayers(plan, images) {
   figma.currentPage.appendChild(frame);
   figma.viewport.scrollAndZoomIntoView([frame]);
 
-  const msg = `Imported ${sortedLayers.length} layers (${importedCount} images, ${missingCount} missing, ${errorCount} errors)`;
+  const msg = `Imported ${sortedLayers.length} layers (${importedCount} images, ${missingCount} missing, ${errorCount} errors${autoLayoutCount > 0 ? ', ' + autoLayoutCount + ' auto-layout groups' : ''})`;
   console.log('[LayerImporter]', msg);
   figma.notify(msg);
 

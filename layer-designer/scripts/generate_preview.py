@@ -84,15 +84,40 @@ def generate_enhanced_plan(
     """
     pm = PathManager(project_name, config_path=config_path)
 
-    # Read layer plan
+    # Determine layer source directory and output phase first
+    if phase in ("rough", "check"):
+        layer_root = pm.get_phase_dir("rough_design")
+        output_phase = "check"
+    elif phase == "refinement":
+        layer_root = pm.get_phase_dir("refinement_layers")
+        output_phase = "refinement"
+    elif phase == "output":
+        layer_root = pm.get_phase_dir("refinement_layers")
+        output_phase = "output"
+    else:
+        raise ValueError(f"Unknown phase: {phase}")
+
+    output_dir = pm.get_phase_dir(output_phase)
+
+    # Read layer plan (prefer expanded_layer_plan.json if it exists)
+    expanded_plan_path = pm.get_expanded_layer_plan_path(phase=output_phase)
+    # Fallback: for output phase, also check check-phase expanded plan
+    fallback_expanded_path = pm.get_expanded_layer_plan_path(phase="check")
     layer_plan_path = pm.get_layer_plan_path()
-    if not layer_plan_path.exists():
+
+    if expanded_plan_path.exists():
+        with open(expanded_plan_path, "r", encoding="utf-8") as f:
+            layer_plan = json.load(f)
+    elif output_phase == "output" and fallback_expanded_path.exists():
+        with open(fallback_expanded_path, "r", encoding="utf-8") as f:
+            layer_plan = json.load(f)
+    elif layer_plan_path.exists():
+        with open(layer_plan_path, "r", encoding="utf-8") as f:
+            layer_plan = json.load(f)
+    else:
         raise FileNotFoundError(f"layer_plan.json not found: {layer_plan_path}")
 
-    with open(layer_plan_path, "r", encoding="utf-8") as f:
-        layer_plan = json.load(f)
-
-    # Determine layer source directory and scaling
+    # Determine scaling
     size_plan_path = pm.get_phase_dir("requirements") / "size_plan.json"
     scale_ratio = 1.0
     canvas_w = canvas_h = 1024
@@ -113,20 +138,6 @@ def generate_enhanced_plan(
         dims = layer_plan.get("dimensions", {})
         canvas_w = dims.get("width", 1024)
         canvas_h = dims.get("height", 1024)
-
-    if phase in ("rough", "check"):
-        layer_root = pm.get_phase_dir("rough_design")
-        output_phase = "check"
-    elif phase == "refinement":
-        layer_root = pm.get_phase_dir("refinement_layers")
-        output_phase = "refinement"
-    elif phase == "output":
-        layer_root = pm.get_phase_dir("refinement_layers")
-        output_phase = "output"
-    else:
-        raise ValueError(f"Unknown phase: {phase}")
-
-    output_dir = pm.get_phase_dir(output_phase)
 
     # Load detection config (with defaults)
     detection_cfg = {}
@@ -165,13 +176,30 @@ def generate_enhanced_plan(
         display_name = layer_info.get("name", "") or layer_info.get("id", "")
         layout = layer_info.get("layout", {})
 
-        layer_dir = layer_root / layer_id
+        # Determine lookup directory for PNG
+        lookup_id = layer_id
+        parent_id = layer_info.get("parent_id", "")
+        repeat_parent_id = layer_info.get("repeat_parent_id", "")
+
+        if layer_info.get("is_repeat_instance") and parent_id:
+            lookup_id = parent_id
+        elif layer_info.get("is_repeat_panel") and repeat_parent_id:
+            lookup_id = layer_id  # panel has its own directory
+
+        layer_dir = layer_root / lookup_id
         png_path = _get_latest_layer_png(layer_dir)
 
         # Relative path from output_dir to PNG
-        if phase == "output":
+        if layer_info.get("is_repeat_parent"):
+            # Parent is a generation template, not rendered in preview
+            rel_path = ""
+        elif phase == "output":
             # Phase 7: source points to cleaned layer files in layers/ folder
-            rel_path = f"layers/{layer_id}.png" if layer_id else ""
+            if layer_info.get("is_repeat_instance") and parent_id:
+                output_layer_id = parent_id
+            else:
+                output_layer_id = layer_id
+            rel_path = f"layers/{output_layer_id}.png" if output_layer_id else ""
         elif png_path:
             import os
             rel_path = Path(os.path.relpath(png_path, output_dir)).as_posix()
@@ -217,6 +245,21 @@ def generate_enhanced_plan(
             "source": rel_path,
             "opacity": layer_info.get("opacity", 1.0),
         }
+        # Preserve repeat_mode metadata for preview rendering
+        if layer_info.get("is_repeat_parent"):
+            layer_entry["is_repeat_parent"] = True
+            layer_entry["repeat_mode"] = layer_info.get("repeat_mode", "")
+            layer_entry["repeat_config"] = layer_info.get("repeat_config", {})
+        if layer_info.get("is_repeat_instance"):
+            layer_entry["is_repeat_instance"] = True
+            layer_entry["parent_id"] = layer_info.get("parent_id", "")
+            layer_entry["repeat_mode"] = layer_info.get("repeat_mode", "")
+            layer_entry["cell_index"] = layer_info.get("cell_index", 0)
+            layer_entry["cell_row"] = layer_info.get("cell_row", 0)
+            layer_entry["cell_col"] = layer_info.get("cell_col", 0)
+        if layer_info.get("is_repeat_panel"):
+            layer_entry["is_repeat_panel"] = True
+            layer_entry["repeat_parent_id"] = layer_info.get("repeat_parent_id", "")
         enhanced_layers.append(layer_entry)
 
     enhanced_plan = {
@@ -226,6 +269,7 @@ def generate_enhanced_plan(
         "style_anchor": layer_plan.get("style_anchor", ""),
         "layers": enhanced_layers,
         "stacking_order": stacking,
+        "repeat_meta": layer_plan.get("repeat_meta", []),
     }
 
     # Save enhanced_layer_plan.json with UTF-8 BOM for Windows compatibility
@@ -235,7 +279,6 @@ def generate_enhanced_plan(
     if apply_detected_layouts and detected_layouts and plan_path.exists():
         from datetime import datetime
         backup_path = plan_path.with_suffix(f".backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-        import shutil
         shutil.copy2(plan_path, backup_path)
         print(f"[BACKUP] Saved previous plan to {backup_path.name}")
 

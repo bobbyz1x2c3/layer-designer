@@ -116,6 +116,30 @@ python scripts/generate_preview.py \
 
 ---
 
+## Step 2: Expand Repeat Mode Layers (if applicable)
+
+**Script**: `expand_repeats.py`
+
+If `layer_plan.json` contains layers with `repeat_mode: "grid"` or `repeat_mode: "list"`, expand them into individual instances before generating the preview:
+
+```bash
+python scripts/expand_repeats.py \
+  --config config.json \
+  --project {project_name} \
+  --input 02-confirmation/layer_plan.json \
+  --output 04-check/expanded_layer_plan.json
+```
+
+This script:
+- Reads `layer_plan.json` and detects `repeat_mode` layers
+- Computes per-instance layouts based on `repeat_config`
+- Writes `expanded_layer_plan.json` with all instances as individual layer entries
+- Each instance shares the same `source` path (pointing to the parent layer's PNG)
+
+**When to run**: Always run before `generate_preview.py` if `repeat_mode` is present. If no `repeat_mode` layers exist, the script outputs a no-op message and `generate_preview.py` will fall back to `layer_plan.json`.
+
+---
+
 ## Step 3: Generate Enhanced Layer Plan
 
 **Script**: `generate_preview.py` (generates JSON + copies template)
@@ -123,7 +147,7 @@ python scripts/generate_preview.py \
 Generate the `enhanced_layer_plan.json` and copy the generic preview template:
 
 ```bash
-# Standard (scaled planned layouts)
+# Standard (scaled planned layouts, auto-prefers expanded_layer_plan.json)
 python scripts/generate_preview.py \
   --config config.json \
   --project {project_name} \
@@ -203,7 +227,7 @@ Send a message to the user with:
 >
 > **布局偏移？** 如果发现某些图层位置不对，我可以尝试用多尺度模板匹配算法在预览图中找到更准确的位置。
 > - 适用于：不透明控件、角色立绘、按钮等**内容明确**的图层
-> - 不适用于：半透明面板（opacity < 0.85）、大面积透明只剩小图标的图层
+> - 不适用于：半透明面板（opacity < 0.85）、大面积透明只剩小图标的图层、启用了grid或list的控件
 > - 需要时请回复：**"尝试算法对齐"**
 
 ---

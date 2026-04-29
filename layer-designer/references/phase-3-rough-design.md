@@ -68,6 +68,41 @@ python scripts/generate_image.py edit \
 - `quality`: layer's quality tier
 - Save output with timestamp in layer folder
 
+**Repeat-mode layer handling**:
+
+For layers with `repeat_mode: "grid"` or `repeat_mode: "list"`, the generation strategy is:
+
+| What to Generate | Count | Notes |
+|-----------------|-------|-------|
+| **Parent cell** | 1 | The single isolated element (e.g., "one product card") |
+| **Panel background** (if `auto_panel.enabled`) | 1 | Container background covering the entire repeat area |
+| **Instance cells** | 0 | Do NOT generate — these are created by `expand_repeats.py` for preview only |
+
+**How it works:**
+1. `expand_repeats.py` creates 3 types of layers in `expanded_layer_plan.json`:
+   - `is_repeat_parent: true` — the original parent layer (needs generation)
+   - `is_repeat_panel: true` — panel background (needs generation, if enabled)
+   - `is_repeat_instance: true` — preview-only instances (NO generation)
+2. In Phase 3, **only generate layers where `is_repeat_parent` or `is_repeat_panel` is true**.
+3. Skip any layer with `is_repeat_instance: true` — these reuse the parent's PNG.
+
+**Generation commands:**
+```bash
+# Parent cell (the template element)
+python scripts/generate_image.py edit \
+  --config config.json \
+  --image {confirmed_preview_path} \
+  --prompt "Extract ONLY one product card. {description}. Transparent background, isolated element. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio..." \
+  --output {layer_path} --size {layer_w}x{layer_h} --quality {tier}
+
+# Panel background (if auto_panel enabled)
+python scripts/generate_image.py edit \
+  --config config.json \
+  --image {confirmed_preview_path} \
+  --prompt "Extract ONLY the container panel background for the product card grid. White rounded rectangle panel, no cards, no elements inside. {style_anchor}." \
+  --output {panel_path} --size {panel_w}x{panel_h} --quality low
+```
+
 **Extreme-ratio layer handling**:
 - If `PathManager.is_extreme_ratio(layout.width, layout.height)` returns `True` (original ratio > model's `max_ratio`, e.g. > 3:1), the compliant canvas will be clamped to a different aspect ratio.
 - The existing prompt already instructs the model to "STRICTLY maintain the element's original aspect ratio", so the element should remain proportionally correct inside the canvas.
