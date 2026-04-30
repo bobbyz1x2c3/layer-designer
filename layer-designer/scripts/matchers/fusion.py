@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from .base import BaseMatcher, MatchResult
+from .edge_canny import EdgeCannyMatcher
 from .gradient import GradientMatcher
 from .rgb_ssd import RgbSsdMatcher
 
@@ -36,7 +37,7 @@ PRESET_PROFILES = {
 _MATCHER_REGISTRY: dict[str, type[BaseMatcher]] = {
     "rgb_ssd": RgbSsdMatcher,
     "gradient": GradientMatcher,
-    # "edge_canny": EdgeCannyMatcher,  # Phase 2
+    "edge_canny": EdgeCannyMatcher,
     # "color_hsv": ColorHsvMatcher,    # Phase 3
     # "pattern_lbp": PatternLbpMatcher, # Phase 3
 }
