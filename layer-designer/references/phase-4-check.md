@@ -89,7 +89,7 @@ This step is **not run by default** and is currently **experimental**. It is off
 4. Matches via downsampled SSD + fine refinement
 5. Outputs `04-check/detected_layouts.json`
 
-**Adaptive multi-feature profiles** (also experimental): The matcher supports profile-based fusion of multiple visual features (RGB SSD, Sobel gradient, Canny edge distance, etc.). The agent inspects the preview, selects a profile (`default`, `structure_heavy`, `color_heavy`, `texture_heavy`), writes `match_profile.json`, and the detection script reads it. See [`references/matching-profiles.md`](references/matching-profiles.md) for the selection guide. Use `--profile <name>` to enable.
+**Adaptive multi-feature profiles**: The matcher fuses multiple visual features weighted by a profile. The agent inspects the preview, selects a profile, writes `match_profile.json`, and the detection script reads it. **General rule: use `default` unless the UI clearly falls into a specialized category.** See [`references/matching-profiles.md`](references/matching-profiles.md) for the full selection guide. Use `--profile <name>` to enable.
 
 **Limitations** — tell the user before offering:
 - Layers with **high transparency** (opacity < 0.85) are skipped automatically because the preview shows blended colors while the extracted layer is opaque
@@ -116,7 +116,7 @@ python scripts/detect_layer_positions.py \
   --layer sidebar \
   --layer header
 
-# 2c. 【实验性的】Override matching profile manually
+# 2c. Override matching profile manually
 python scripts/detect_layer_positions.py \
   --project my-app --config config.json \
   --preview output/my-app/01-requirements/previews/preview_v2_001.png \

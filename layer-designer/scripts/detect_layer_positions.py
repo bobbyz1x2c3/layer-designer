@@ -28,9 +28,15 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).parent))
 from path_manager import PathManager
 
+from matchers import FusionMatcher, _resolve_profile
+from visualize_detect import draw_layout_viz
 
-# Search scales around the planned size to handle crop_to_content drift
-DEFAULT_SCALES = [0.65, 0.75, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.20, 1.30, 1.35]
+
+# Relative scale factors around the "contain-fit" base scale.
+# Base scale is computed per-layer as min(plan_w / tpl_w, plan_h / tpl_h)
+# so that scale=1.0 means the template fits exactly inside the planned rect
+# while preserving its original aspect ratio (object-fit: contain).
+DEFAULT_RELATIVE_SCALES = [0.70, 0.85, 0.95, 1.00, 1.05, 1.15, 1.30]
 
 # ROI expands planned size by this factor on each side (3.5 = ±250% margin)
 ROI_FACTOR = 3.5
@@ -56,7 +62,7 @@ def _get_detection_config(config_path: str | None) -> dict:
         "warn_offset_threshold": 0.30,
         "ssd_confidence_threshold": 20000.0,
         "roi_factor": 3.5,
-        "search_scales": DEFAULT_SCALES,
+        "search_scales": DEFAULT_RELATIVE_SCALES,
         "fine_radius": 12,
         "downsample": 4,
     }
@@ -217,8 +223,14 @@ def _subpixel_refinement(ssd_map: np.ndarray, cy: int, cx: int) -> tuple[float, 
 
 
 def _match_scale(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray,
-                   downsample: int = 4, fine_radius: int = 12) -> tuple:
-    """Match a single-scale template inside ROI. Returns (best_y, best_x, best_ssd, valid_pixels)."""
+                   downsample: int = 4, fine_radius: int = 12,
+                   fusion_matcher=None, scale: float = 1.0) -> tuple:
+    """Match a single-scale template inside ROI. Returns (best_y, best_x, best_ssd, valid_pixels).
+
+    If ``fusion_matcher`` is provided, the downsampled coarse match uses the
+    fused feature score (higher = better) instead of pure SSD.  The ±1px
+    confirmation still computes SSD for confidence consistency.
+    """
     H, W = roi_rgb.shape[:2]
     h, w = tpl_rgb.shape[:2]
 
@@ -230,7 +242,7 @@ def _match_scale(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray
     weight = tpl_alpha[:, :, np.newaxis]
     valid_pixels = max(1, int(tpl_alpha.sum()))
 
-    # --- Coarse match at 1/downsample resolution via FFT ---
+    # --- Coarse match at 1/downsample resolution ---
     roi_d = _downsample(roi_rgb, downsample)
     tpl_d = _downsample(tpl_rgb, downsample)
     alpha_d = _downsample(tpl_alpha, downsample)
@@ -240,14 +252,19 @@ def _match_scale(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray
     if hd > Hd or wd > Wd:
         return None, None, float("inf"), 0
 
-    # FFT-based alpha-weighted SSD map
-    ssd_map = _ssd_via_fft(roi_d, tpl_d, alpha_d)
-
-    # Best coarse position (minimum SSD)
-    cy_d, cx_d = np.unravel_index(np.argmin(ssd_map), ssd_map.shape)
-
-    # --- Subpixel refinement via parabolic fit ---
-    sub_y, sub_x = _subpixel_refinement(ssd_map, cy_d, cx_d)
+    if fusion_matcher is not None:
+        # Fusion-based coarse matching (higher score = better)
+        desc = fusion_matcher.extract(tpl_d, alpha_d)
+        result = fusion_matcher.match(roi_d, desc, scale)
+        score_map = result.score_map
+        cy_d, cx_d = np.unravel_index(np.argmax(score_map), score_map.shape)
+        # Subpixel refinement on inverted map (turn max → min)
+        sub_y, sub_x = _subpixel_refinement(-score_map, cy_d, cx_d)
+    else:
+        # Legacy SSD-based coarse matching (lower = better)
+        ssd_map = _ssd_via_fft(roi_d, tpl_d, alpha_d)
+        cy_d, cx_d = np.unravel_index(np.argmin(ssd_map), ssd_map.shape)
+        sub_y, sub_x = _subpixel_refinement(ssd_map, cy_d, cx_d)
 
     # Map subpixel position back to original resolution
     fine_y = int(round((cy_d + sub_y) * downsample))
@@ -257,7 +274,7 @@ def _match_scale(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray
     fine_y = max(0, min(fine_y, H - h))
     fine_x = max(0, min(fine_x, W - w))
 
-    # --- ±1px confirmation search (safety net) ---
+    # --- ±1px confirmation search (SSD for cross-scale confidence consistency) ---
     best_y, best_x = fine_y, fine_x
     best_ssd = float("inf")
 
@@ -291,6 +308,7 @@ def detect_layer(
     fine_radius: int = 12,
     opacity: float = 1.0,
     force: bool = False,
+    fusion_matcher: FusionMatcher | None = None,
 ) -> dict:
     """Detect a single layer's position via multi-scale template matching.
 
@@ -346,7 +364,15 @@ def detect_layer(
     base_h, base_w = tpl_base.shape[:2]
 
     coarse_scores = []
-    for s in scales:
+    # Compute base scale so that template fits inside planned rect (contain)
+    tpl_orig_h, tpl_orig_w = tpl_rgb.shape[:2]
+    base_scale = min(pw / max(1, tpl_orig_w), ph / max(1, tpl_orig_h))
+    base_scale = max(0.05, min(5.0, base_scale))
+
+    # Convert relative scales to absolute scales
+    abs_scales = [base_scale * s for s in scales]
+
+    for s in abs_scales:
         target_w = max(1, int(base_w * s))
         target_h = max(1, int(base_h * s))
 
@@ -369,9 +395,6 @@ def detect_layer(
         if hc > Hc or wc > Wc:
             continue
 
-        ssd_map = _ssd_via_fft(roi_coarse, tpl_coarse, alpha_coarse)
-        min_ssd = float(ssd_map.min())
-
         # Store the FULL-resolution resized template for fine matching later.
         # CRITICAL: use the template's ORIGINAL aspect ratio, NOT the planned size.
         # Planned size is an estimate; the cropped PNG's actual proportions are the
@@ -390,10 +413,28 @@ def detect_layer(
         ) / 255.0
         alpha_resized[alpha_resized < 0.02] = 0.0
 
-        coarse_scores.append((min_ssd, s, tpl_resized, alpha_resized))
+        if fusion_matcher is not None:
+            # Fusion-based coarse scoring (higher = better)
+            desc = fusion_matcher.extract(tpl_coarse, alpha_coarse)
+            result = fusion_matcher.match(roi_coarse, desc, s)
+            # DEBUG: print per-feature best position
+            if hasattr(fusion_matcher, 'matchers') and len(fusion_matcher.matchers) == 1:
+                feat_name = list(fusion_matcher.matchers.keys())[0]
+                print(f"       [COARSE-{feat_name}] scale={s:.3f} best=({result.best_y},{result.best_x}) score={result.best_score:.4f}")
+            coarse_scores.append((result.best_score, s, tpl_resized, alpha_resized))
+        else:
+            # Legacy SSD-based coarse scoring (lower = better)
+            ssd_map = _ssd_via_fft(roi_coarse, tpl_coarse, alpha_coarse)
+            min_ssd = float(ssd_map.min())
+            cy, cx = np.unravel_index(np.argmin(ssd_map), ssd_map.shape)
+            print(f"       [COARSE-SSD] scale={s:.3f} best=({cy},{cx}) ssd={min_ssd:.2f}")
+            coarse_scores.append((min_ssd, s, tpl_resized, alpha_resized))
 
-    # Keep top-K candidates (or all if fewer than K)
-    coarse_scores.sort(key=lambda x: x[0])
+    # Keep top-K candidates
+    if fusion_matcher is not None:
+        coarse_scores.sort(key=lambda x: x[0], reverse=True)
+    else:
+        coarse_scores.sort(key=lambda x: x[0])
     candidate_scales = coarse_scores[:COARSE_TOP_K]
     t_coarse_elapsed = (time.perf_counter() - t_coarse_start) * 1000
 
@@ -420,7 +461,8 @@ def detect_layer(
     for _coarse_ssd, s, tpl_resized, alpha_resized in candidate_scales:
         t_scale_start = time.perf_counter()
         match_result = _match_scale(roi_rgb, tpl_resized, alpha_resized,
-                                     downsample=downsample, fine_radius=fine_radius)
+                                     downsample=downsample, fine_radius=fine_radius,
+                                     fusion_matcher=fusion_matcher, scale=s)
         t_scale_elapsed = (time.perf_counter() - t_scale_start) * 1000
         scale_timings.append(round(t_scale_elapsed, 2))
 
@@ -429,7 +471,8 @@ def detect_layer(
         my, mx, ssd_val, valid_pixels = match_result
 
         target_h, target_w = tpl_resized.shape[:2]
-        # Cross-scale comparison: normalize by TOTAL pixels + penalties
+
+        # Cross-scale comparison: normalize by pixel count with mild penalties
         total_pixels = max(1, target_h * target_w)
         base_norm = ssd_val / total_pixels
 
@@ -562,7 +605,7 @@ def _prepare_detection(
         scale_y = preview_h / canvas_h
         canvas_w, canvas_h = preview_w, preview_h
 
-    scales = scales or det_cfg.get("search_scales", DEFAULT_SCALES)
+    scales = scales or det_cfg.get("search_scales", DEFAULT_RELATIVE_SCALES)
     roi_factor = det_cfg.get("roi_factor", 3.5)
     ssd_threshold = det_cfg.get("ssd_confidence_threshold", 20000.0)
     downsample = det_cfg.get("downsample", 4)
@@ -672,6 +715,7 @@ def detect_all_layers(
     scales: list[float] | None = None,
     layer_filter: list[str] | None = None,
     force: bool = False,
+    profile: str | Path | dict | None = None,
 ) -> dict:
     """Run detection for selected layers.
 
@@ -684,6 +728,11 @@ def detect_all_layers(
     """
     context = _prepare_detection(project_name, preview_path, phase, config_path, scales)
     layer_plan = context["layer_plan"]
+
+    # Initialize fusion matcher if a profile is configured
+    pm = PathManager(project_name, config_path=config_path)
+    profile_cfg = _resolve_profile(profile, project_dir=pm.get_output_dir())
+    fusion_matcher = FusionMatcher(profile_cfg) if profile_cfg else None
 
     results = {}
     layers = layer_plan.get("layers", [])
@@ -739,6 +788,7 @@ def detect_all_layers(
             fine_radius=context["fine_radius"],
             opacity=opacity,
             force=force,
+            fusion_matcher=fusion_matcher,
         )
         results[lid] = result
         timing = result.get("timing_ms", 0)
@@ -774,6 +824,11 @@ def main():
     parser.add_argument("--force", action="store_true",
                         help="Force detection on all requested layers, skipping opacity/background/repeat safety checks. "
                              "Use only when the user explicitly requests it.")
+    parser.add_argument("--profile", default=None,
+                        help="Matching profile: preset name (default, structure_heavy, color_heavy, texture_heavy) "
+                             "or path to a JSON profile file. Auto-detects match_profile.json in output dir if omitted.")
+    parser.add_argument("--visualize", "-v", action="store_true",
+                        help="Generate a visualization image after detection showing planned (red) vs detected (green/yellow) positions.")
     args = parser.parse_args()
 
     # Default output path
@@ -794,6 +849,7 @@ def main():
         config_path=args.config, scales=args.scales,
         layer_filter=args.layer,
         force=args.force,
+        profile=args.profile,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -805,6 +861,19 @@ def main():
     print("-" * 60)
     print(f"[DONE] {detected_count}/{total_count} layers matched successfully")
     print(f"[SAVE] {output_path}")
+
+    if args.visualize:
+        try:
+            viz_path = output_path.parent / f"detection_viz_{output_path.stem}.png"
+            out = draw_layout_viz(
+                preview_path=Path(args.preview),
+                detected_path=output_path,
+                output_path=viz_path,
+                layer_filter=args.layer,
+            )
+            print(f"[VIZ]  {out}")
+        except Exception as e:
+            print(f"[VIZ]  Visualization failed: {e}")
 
 
 if __name__ == "__main__":

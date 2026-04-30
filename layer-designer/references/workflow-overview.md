@@ -96,10 +96,10 @@ Phase 8 状态变体      →  generate_variants.py（可选）
 |------|------|
 | 检查 | RGBA 模式 → 随机采样检测 alpha==0 ≥ 2 个像素 |
 | 检查 | RGB/L/P 模式 → 降级检测纯色浅色背景 |
-| **抠图** | `--remove-bg` 触发 rembg（U²Net）深度学习抠图 |
+| **抠图** | `--remove-bg` 触发 rembg深度学习抠图 |
 
 **抠图实现**：
-- 使用 `rembg.remove()`（U²Net ONNX 模型）
+- 使用 `rembg.remove()`
 - 模型路径：`layer-designer/models/u2net.onnx`（通过 `U2NET_HOME` 环境变量指向）
 - **不允许 fallback**，rembg 失败直接报错
 - 输出带羽化边缘的真 RGBA PNG
@@ -238,9 +238,9 @@ Phase 8 状态变体      →  generate_variants.py（可选）
 - 适合：新设计、需求不明确
 
 ### Fast Track Mode（快速通道）
-- Phase 1 生成 **1 张预览**
+- Phase 1 生成 **1 张预览**（Standard 是 3 张）
 - 修订 **不限轮次**
-- Phase 2 **合并到 Phase 1 Step 9**（预览 OK 后立即输出图层方案）
+- Phase 2 **仍然需要**（和 Standard 一样需确认图层方案）
 - 适合：快速迭代、已知资产类型
 
 ---
