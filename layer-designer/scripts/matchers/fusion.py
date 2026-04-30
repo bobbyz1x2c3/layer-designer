@@ -5,8 +5,10 @@ from pathlib import Path
 import numpy as np
 
 from .base import BaseMatcher, MatchResult
+from .color_hsv import ColorHsvMatcher
 from .edge_canny import EdgeCannyMatcher
 from .gradient import GradientMatcher
+from .pattern_lbp import PatternLbpMatcher
 from .rgb_ssd import RgbSsdMatcher
 
 
@@ -38,8 +40,8 @@ _MATCHER_REGISTRY: dict[str, type[BaseMatcher]] = {
     "rgb_ssd": RgbSsdMatcher,
     "gradient": GradientMatcher,
     "edge_canny": EdgeCannyMatcher,
-    # "color_hsv": ColorHsvMatcher,    # Phase 3
-    # "pattern_lbp": PatternLbpMatcher, # Phase 3
+    "color_hsv": ColorHsvMatcher,
+    "pattern_lbp": PatternLbpMatcher,
 }
 
 
@@ -124,11 +126,16 @@ class FusionMatcher:
             results[name] = matcher.match(roi_rgb, desc, scale)
 
         # Normalize each score map to [0, 1] then weighted sum
+        # For single-feature mode, skip normalization so raw scores are comparable across scales
         fused = None
         total_weight = 0.0
+        single_mode = len(results) == 1
         for name, res in results.items():
             w = self.weights[name]
-            norm = _normalize_score(res.score_map)
+            if single_mode:
+                norm = res.score_map
+            else:
+                norm = _normalize_score(res.score_map)
             if fused is None:
                 fused = w * norm
             else:

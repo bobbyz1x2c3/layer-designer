@@ -223,8 +223,14 @@ def _subpixel_refinement(ssd_map: np.ndarray, cy: int, cx: int) -> tuple[float, 
 
 
 def _match_scale(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray,
-                   downsample: int = 4, fine_radius: int = 12) -> tuple:
-    """Match a single-scale template inside ROI. Returns (best_y, best_x, best_ssd, valid_pixels)."""
+                   downsample: int = 4, fine_radius: int = 12,
+                   fusion_matcher=None, scale: float = 1.0) -> tuple:
+    """Match a single-scale template inside ROI. Returns (best_y, best_x, best_ssd, valid_pixels).
+
+    If ``fusion_matcher`` is provided, the downsampled coarse match uses the
+    fused feature score (higher = better) instead of pure SSD.  The ±1px
+    confirmation still computes SSD for confidence consistency.
+    """
     H, W = roi_rgb.shape[:2]
     h, w = tpl_rgb.shape[:2]
 
@@ -236,7 +242,7 @@ def _match_scale(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray
     weight = tpl_alpha[:, :, np.newaxis]
     valid_pixels = max(1, int(tpl_alpha.sum()))
 
-    # --- Coarse match at 1/downsample resolution via FFT ---
+    # --- Coarse match at 1/downsample resolution ---
     roi_d = _downsample(roi_rgb, downsample)
     tpl_d = _downsample(tpl_rgb, downsample)
     alpha_d = _downsample(tpl_alpha, downsample)
@@ -246,14 +252,19 @@ def _match_scale(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray
     if hd > Hd or wd > Wd:
         return None, None, float("inf"), 0
 
-    # FFT-based alpha-weighted SSD map
-    ssd_map = _ssd_via_fft(roi_d, tpl_d, alpha_d)
-
-    # Best coarse position (minimum SSD)
-    cy_d, cx_d = np.unravel_index(np.argmin(ssd_map), ssd_map.shape)
-
-    # --- Subpixel refinement via parabolic fit ---
-    sub_y, sub_x = _subpixel_refinement(ssd_map, cy_d, cx_d)
+    if fusion_matcher is not None:
+        # Fusion-based coarse matching (higher score = better)
+        desc = fusion_matcher.extract(tpl_d, alpha_d)
+        result = fusion_matcher.match(roi_d, desc, scale)
+        score_map = result.score_map
+        cy_d, cx_d = np.unravel_index(np.argmax(score_map), score_map.shape)
+        # Subpixel refinement on inverted map (turn max → min)
+        sub_y, sub_x = _subpixel_refinement(-score_map, cy_d, cx_d)
+    else:
+        # Legacy SSD-based coarse matching (lower = better)
+        ssd_map = _ssd_via_fft(roi_d, tpl_d, alpha_d)
+        cy_d, cx_d = np.unravel_index(np.argmin(ssd_map), ssd_map.shape)
+        sub_y, sub_x = _subpixel_refinement(ssd_map, cy_d, cx_d)
 
     # Map subpixel position back to original resolution
     fine_y = int(round((cy_d + sub_y) * downsample))
@@ -263,7 +274,7 @@ def _match_scale(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray
     fine_y = max(0, min(fine_y, H - h))
     fine_x = max(0, min(fine_x, W - w))
 
-    # --- ±1px confirmation search (safety net) ---
+    # --- ±1px confirmation search (SSD for cross-scale confidence consistency) ---
     best_y, best_x = fine_y, fine_x
     best_ssd = float("inf")
 
@@ -406,11 +417,17 @@ def detect_layer(
             # Fusion-based coarse scoring (higher = better)
             desc = fusion_matcher.extract(tpl_coarse, alpha_coarse)
             result = fusion_matcher.match(roi_coarse, desc, s)
+            # DEBUG: print per-feature best position
+            if hasattr(fusion_matcher, 'matchers') and len(fusion_matcher.matchers) == 1:
+                feat_name = list(fusion_matcher.matchers.keys())[0]
+                print(f"       [COARSE-{feat_name}] scale={s:.3f} best=({result.best_y},{result.best_x}) score={result.best_score:.4f}")
             coarse_scores.append((result.best_score, s, tpl_resized, alpha_resized))
         else:
             # Legacy SSD-based coarse scoring (lower = better)
             ssd_map = _ssd_via_fft(roi_coarse, tpl_coarse, alpha_coarse)
             min_ssd = float(ssd_map.min())
+            cy, cx = np.unravel_index(np.argmin(ssd_map), ssd_map.shape)
+            print(f"       [COARSE-SSD] scale={s:.3f} best=({cy},{cx}) ssd={min_ssd:.2f}")
             coarse_scores.append((min_ssd, s, tpl_resized, alpha_resized))
 
     # Keep top-K candidates
@@ -444,7 +461,8 @@ def detect_layer(
     for _coarse_ssd, s, tpl_resized, alpha_resized in candidate_scales:
         t_scale_start = time.perf_counter()
         match_result = _match_scale(roi_rgb, tpl_resized, alpha_resized,
-                                     downsample=downsample, fine_radius=fine_radius)
+                                     downsample=downsample, fine_radius=fine_radius,
+                                     fusion_matcher=fusion_matcher, scale=s)
         t_scale_elapsed = (time.perf_counter() - t_scale_start) * 1000
         scale_timings.append(round(t_scale_elapsed, 2))
 
@@ -453,7 +471,8 @@ def detect_layer(
         my, mx, ssd_val, valid_pixels = match_result
 
         target_h, target_w = tpl_resized.shape[:2]
-        # Cross-scale comparison: normalize by TOTAL pixels + penalties
+
+        # Cross-scale comparison: normalize by pixel count with mild penalties
         total_pixels = max(1, target_h * target_w)
         base_norm = ssd_val / total_pixels
 
