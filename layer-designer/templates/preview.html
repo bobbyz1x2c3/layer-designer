@@ -94,6 +94,56 @@
       background: rgba(30, 41, 59, 0.3);
     }
     .layer.is-panel.selected { outline: 2px solid #f59e0b; }
+
+    /* Repeat group: mirrors Figma Auto Layout structure */
+    .repeat-group {
+      position: absolute;
+      overflow: hidden;
+      cursor: grab;
+      user-select: none;
+    }
+    .repeat-group:active { cursor: grabbing; }
+    .repeat-group.selected { outline: 2px solid #3b82f6; }
+
+    .repeat-group .panel-bg {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .repeat-group .panel-bg img {
+      width: 100%; height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    .repeat-autoframe {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 1;
+      display: flex;
+    }
+    .repeat-autoframe.grid {
+      display: grid;
+    }
+
+    .repeat-instance {
+      position: relative;
+      flex-shrink: 0;
+      overflow: hidden;
+      cursor: pointer;
+    }
+    .repeat-instance img {
+      width: 100%; height: 100%;
+      object-fit: contain;
+      display: block;
+      pointer-events: none;
+    }
+    .repeat-instance:hover {
+      outline: 1px dashed rgba(59, 130, 246, 0.5);
+    }
     .layer img {
       width: 100%;
       height: 100%;
@@ -279,6 +329,7 @@
     let startLeft = 0, startTop = 0, startWidth = 0, startHeight = 0;
     let canvasScale = 1;
     let pendingImportLayer = null;
+    let dragTarget = null;
 
     const canvas = document.getElementById('canvas');
     const canvasWrap = document.getElementById('canvasWrap');
@@ -360,64 +411,45 @@
       const order = data.stacking_order || [];
       const orderMap = {};
       order.forEach((name, i) => orderMap[name] = i);
-      const layers = [...(data.layers || [])].sort((a, b) => (orderMap[a.name] || 0) - (orderMap[b.name] || 0));
+      const allLayers = [...(data.layers || [])];
 
-      layers.forEach((layer, idx) => {
-        // Skip repeat parent layers — they are generation templates only
-        if (layer.is_repeat_parent) return;
+      // Separate repeat groups from regular layers
+      const repeatGroups = {};
+      const regularLayers = [];
 
-        const l = layer.layout || {};
-        const el = document.createElement('div');
-        el.className = 'layer';
-        if (layer.is_repeat_panel) el.classList.add('is-panel');
-        el.dataset.name = layer.name;
-        el.style.left = (l.x || 0) + 'px';
-        el.style.top = (l.y || 0) + 'px';
-        el.style.width = (l.width || 100) + 'px';
-        el.style.height = (l.height || 100) + 'px';
-        el.style.zIndex = orderMap[layer.name] || idx;
-        if (layer.opacity !== undefined) el.style.opacity = layer.opacity;
+      for (const layer of allLayers) {
+        if (layer.is_repeat_parent) {
+          repeatGroups[layer.id || layer.name] = { parent: layer, instances: [], panel: null };
+        }
+      }
+      for (const layer of allLayers) {
+        if (layer.is_repeat_instance && layer.parent_id && repeatGroups[layer.parent_id]) {
+          repeatGroups[layer.parent_id].instances.push(layer);
+        } else if (layer.is_repeat_panel && layer.repeat_parent_id && repeatGroups[layer.repeat_parent_id]) {
+          repeatGroups[layer.repeat_parent_id].panel = layer;
+        } else if (!layer.is_repeat_parent) {
+          regularLayers.push(layer);
+        }
+      }
 
-        const img = document.createElement('img');
-        img.src = layer.source || '';
-        img.alt = layer.name;
-        img.onerror = () => {
-          // Image failed to load — show placeholder with import option
-          img.style.display = 'none';
-          const placeholder = document.createElement('div');
-          placeholder.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:rgba(30,41,59,0.8);border:1px dashed #475569;color:#94a3b8;font-size:11px;cursor:pointer;border-radius:4px;';
-          placeholder.textContent = '📂 Click to import image';
-          placeholder.title = 'Source not found: ' + (layer.source || 'none');
-          placeholder.onclick = (e) => {
-            e.stopPropagation();
-            importImageForLayer(layer.name);
-          };
-          el.appendChild(placeholder);
-        };
+      // Sort regular layers by stacking order
+      regularLayers.sort((a, b) => (orderMap[a.name] || 0) - (orderMap[b.name] || 0));
 
-        const label = document.createElement('div');
-        label.className = 'layer-label';
-        const repeatBadge = layer.is_repeat_instance ? '🔄 ' : '';
-        label.textContent = repeatBadge + layer.name;
+      // Render regular layers
+      for (const layer of regularLayers) {
+        renderRegularLayer(layer, orderMap);
+      }
 
-        const handles = ['nw','n','ne','w','e','sw','s','se'].map(dir =>
-          `<div class="resize-handle ${dir}" data-dir="${dir}"></div>`
-        ).join('');
-
-        el.innerHTML = '';
-        el.appendChild(img);
-        el.appendChild(label);
-        el.insertAdjacentHTML('beforeend', handles);
-        canvas.appendChild(el);
-
-        // Events
-        el.addEventListener('mousedown', onLayerMouseDown);
-
-        // Layer tags will be built after the loop for grouping
+      // Render repeat groups (respect stacking order of parent)
+      const groupList = Object.values(repeatGroups).sort((a, b) => {
+        return (orderMap[a.parent.name] || 0) - (orderMap[b.parent.name] || 0);
       });
+      for (const group of groupList) {
+        renderRepeatGroup(group, orderMap);
+      }
 
       // Build layer list with repeat instance grouping
-      buildLayerList(layers);
+      buildLayerList(allLayers);
 
       // Resize handle events
       canvas.querySelectorAll('.resize-handle').forEach(h => {
@@ -427,17 +459,185 @@
       updateEditor();
     }
 
+    function renderRegularLayer(layer, orderMap) {
+      const l = layer.layout || {};
+      const el = document.createElement('div');
+      el.className = 'layer';
+      if (layer.is_repeat_panel) el.classList.add('is-panel');
+      el.dataset.name = layer.name;
+      el.style.left = (l.x || 0) + 'px';
+      el.style.top = (l.y || 0) + 'px';
+      el.style.width = (l.width || 100) + 'px';
+      el.style.height = (l.height || 100) + 'px';
+      el.style.zIndex = orderMap[layer.name] || 0;
+      if (layer.opacity !== undefined) el.style.opacity = layer.opacity;
+
+      const img = document.createElement('img');
+      img.src = layer.source || '';
+      img.alt = layer.name;
+      img.onerror = () => {
+        img.style.display = 'none';
+        const placeholder = document.createElement('div');
+        placeholder.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:rgba(30,41,59,0.8);border:1px dashed #475569;color:#94a3b8;font-size:11px;cursor:pointer;border-radius:4px;';
+        placeholder.textContent = '📂 Click to import image';
+        placeholder.title = 'Source not found: ' + (layer.source || 'none');
+        placeholder.onclick = (e) => {
+          e.stopPropagation();
+          importImageForLayer(layer.name);
+        };
+        el.appendChild(placeholder);
+      };
+
+      const label = document.createElement('div');
+      label.className = 'layer-label';
+      label.textContent = layer.name;
+
+      const handles = ['nw','n','ne','w','e','sw','s','se'].map(dir =>
+        `<div class="resize-handle ${dir}" data-dir="${dir}"></div>`
+      ).join('');
+
+      el.appendChild(img);
+      el.appendChild(label);
+      el.insertAdjacentHTML('beforeend', handles);
+      canvas.appendChild(el);
+
+      el.addEventListener('mousedown', onLayerMouseDown);
+    }
+
+    function resolvePadding(config) {
+      const p = config.padding;
+      if (p !== undefined && p !== null) {
+        if (typeof p === 'object') {
+          return {
+            top: p.top || 0,
+            right: p.right || 0,
+            bottom: p.bottom || 0,
+            left: p.left || 0
+          };
+        }
+        const v = parseInt(p) || 0;
+        return { top: v, right: v, bottom: v, left: v };
+      }
+      return { top: 0, right: 0, bottom: 0, left: 0 };
+    }
+
+    function renderRepeatGroup(group, orderMap) {
+      const parent = group.parent;
+      const config = parent.repeat_config || {};
+      const mode = parent.repeat_mode || 'grid';
+      const pLayout = parent.layout || {};
+
+      // Container: mirrors Figma container Frame (absolute positioned)
+      const container = document.createElement('div');
+      container.className = 'repeat-group';
+      container.dataset.name = parent.name;
+      container.dataset.groupId = parent.id || parent.name;
+      container.style.left = (pLayout.x || 0) + 'px';
+      container.style.top = (pLayout.y || 0) + 'px';
+      container.style.width = (pLayout.width || 100) + 'px';
+      container.style.height = (pLayout.height || 100) + 'px';
+      container.style.zIndex = orderMap[parent.name] || 999;
+      if (parent.opacity !== undefined) container.style.opacity = parent.opacity;
+
+      // Panel background (if exists)
+      if (group.panel) {
+        const panelEl = document.createElement('div');
+        panelEl.className = 'panel-bg';
+        const panelImg = document.createElement('img');
+        panelImg.src = group.panel.source || '';
+        panelImg.onerror = () => { panelImg.style.display = 'none'; };
+        panelEl.appendChild(panelImg);
+        container.appendChild(panelEl);
+      }
+
+      // AutoFrame: mirrors Figma auto layout frame (flex/grid)
+      const autoFrame = document.createElement('div');
+      autoFrame.className = 'repeat-autoframe' + (mode === 'grid' ? ' grid' : '');
+
+      const padding = resolvePadding(config);
+      autoFrame.style.padding = `${padding.top}px ${padding.right}px ${padding.bottom}px ${padding.left}px`;
+
+      if (mode === 'grid') {
+        const cols = config.cols || 1;
+        const gapX = config.gap_x || 0;
+        const gapY = config.gap_y || 0;
+        autoFrame.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+        autoFrame.style.gap = `${gapY}px ${gapX}px`;
+
+        for (const inst of group.instances) {
+          const instEl = createRepeatInstance(inst);
+          instEl.style.gridColumn = (inst.cell_col || 0) + 1;
+          instEl.style.gridRow = (inst.cell_row || 0) + 1;
+          autoFrame.appendChild(instEl);
+        }
+      } else if (mode === 'list') {
+        const direction = config.direction || 'horizontal';
+        const gap = config.gap || 0;
+        autoFrame.style.flexDirection = direction === 'horizontal' ? 'row' : 'column';
+        autoFrame.style.gap = gap + 'px';
+
+        for (const inst of group.instances) {
+          autoFrame.appendChild(createRepeatInstance(inst));
+        }
+      }
+
+      container.appendChild(autoFrame);
+
+      // Resize handles for container
+      const handles = ['nw','n','ne','w','e','sw','s','se'].map(dir =>
+        `<div class="resize-handle ${dir}" data-dir="${dir}"></div>`
+      ).join('');
+      container.insertAdjacentHTML('beforeend', handles);
+
+      canvas.appendChild(container);
+
+      // Clicking on the group selects the parent
+      container.addEventListener('mousedown', onRepeatGroupMouseDown);
+    }
+
+    function createRepeatInstance(inst) {
+      const el = document.createElement('div');
+      el.className = 'repeat-instance';
+      el.dataset.name = inst.name;
+
+      // Size: use cell_layout from parent if available, else instance layout
+      const cellW = inst.layout?.width || 100;
+      const cellH = inst.layout?.height || 100;
+      el.style.width = cellW + 'px';
+      el.style.height = cellH + 'px';
+
+      const img = document.createElement('img');
+      img.src = inst.source || '';
+      img.alt = inst.name;
+      img.onerror = () => { img.style.display = 'none'; };
+
+      el.appendChild(img);
+      return el;
+    }
+
     // ─── Mouse Events ───
     function onLayerMouseDown(e) {
       if (e.target.classList.contains('resize-handle')) return;
       e.stopPropagation();
       selectLayer(e.currentTarget.dataset.name);
       isDragging = true;
+      dragTarget = e.currentTarget;
       startX = e.clientX;
       startY = e.clientY;
-      const el = getLayerEl(selectedName);
-      startLeft = parseInt(el.style.left) || 0;
-      startTop = parseInt(el.style.top) || 0;
+      startLeft = parseInt(dragTarget.style.left) || 0;
+      startTop = parseInt(dragTarget.style.top) || 0;
+    }
+
+    function onRepeatGroupMouseDown(e) {
+      if (e.target.classList.contains('resize-handle')) return;
+      e.stopPropagation();
+      selectLayer(e.currentTarget.dataset.name);
+      isDragging = true;
+      dragTarget = e.currentTarget;
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = parseInt(dragTarget.style.left) || 0;
+      startTop = parseInt(dragTarget.style.top) || 0;
     }
 
     function onHandleMouseDown(e) {
@@ -445,28 +645,27 @@
       e.preventDefault();
       isResizing = true;
       resizeDir = e.target.dataset.dir;
-      selectedName = e.target.closest('.layer').dataset.name;
+      dragTarget = e.target.closest('.layer, .repeat-group');
+      selectedName = dragTarget.dataset.name;
       selectLayer(selectedName);
       startX = e.clientX;
       startY = e.clientY;
-      const el = getLayerEl(selectedName);
-      startLeft = parseInt(el.style.left) || 0;
-      startTop = parseInt(el.style.top) || 0;
-      startWidth = parseInt(el.style.width) || 0;
-      startHeight = parseInt(el.style.height) || 0;
+      startLeft = parseInt(dragTarget.style.left) || 0;
+      startTop = parseInt(dragTarget.style.top) || 0;
+      startWidth = parseInt(dragTarget.style.width) || 0;
+      startHeight = parseInt(dragTarget.style.height) || 0;
     }
 
     document.addEventListener('mousemove', (e) => {
-      if (isDragging && selectedName) {
+      if (isDragging && dragTarget) {
         const dx = e.clientX - startX;
         const dy = e.clientY - startY;
-        const el = getLayerEl(selectedName);
-        el.style.left = (startLeft + dx) + 'px';
-        el.style.top = (startTop + dy) + 'px';
-        syncLayoutFromDOM(selectedName);
+        dragTarget.style.left = (startLeft + dx) + 'px';
+        dragTarget.style.top = (startTop + dy) + 'px';
+        syncLayoutFromDOM(dragTarget.dataset.name);
         updateEditor();
       }
-      if (isResizing && selectedName) {
+      if (isResizing && dragTarget) {
         const dx = e.clientX - startX;
         const dy = e.clientY - startY;
         let newLeft = startLeft, newTop = startTop;
@@ -475,17 +674,16 @@
         if (resizeDir.includes('w')) { newWidth = Math.max(20, startWidth - dx); newLeft = startLeft + (startWidth - newWidth); }
         if (resizeDir.includes('s')) newHeight = Math.max(20, startHeight + dy);
         if (resizeDir.includes('n')) { newHeight = Math.max(20, startHeight - dy); newTop = startTop + (startHeight - newHeight); }
-        const el = getLayerEl(selectedName);
-        el.style.left = newLeft + 'px';
-        el.style.top = newTop + 'px';
-        el.style.width = newWidth + 'px';
-        el.style.height = newHeight + 'px';
-        syncLayoutFromDOM(selectedName);
+        dragTarget.style.left = newLeft + 'px';
+        dragTarget.style.top = newTop + 'px';
+        dragTarget.style.width = newWidth + 'px';
+        dragTarget.style.height = newHeight + 'px';
+        syncLayoutFromDOM(dragTarget.dataset.name);
         updateEditor();
       }
     });
 
-    document.addEventListener('mouseup', () => { isDragging = false; isResizing = false; });
+    document.addEventListener('mouseup', () => { isDragging = false; isResizing = false; dragTarget = null; });
 
     // Click anywhere outside interactive elements to deselect
     document.addEventListener('mousedown', (e) => {
@@ -503,8 +701,24 @@
     function selectLayer(name) {
       deselectAll();
       selectedName = name;
-      const el = getLayerEl(name);
-      if (el) el.classList.add('selected');
+
+      const layer = (data.layers || []).find(l => l.name === name);
+
+      // If selecting an instance or panel, highlight the parent container
+      let containerId = null;
+      if (layer && layer.is_repeat_instance) containerId = layer.parent_id;
+      else if (layer && layer.is_repeat_panel) containerId = layer.repeat_parent_id;
+
+      if (containerId) {
+        const container = canvas.querySelector('.repeat-group[data-group-id="' + containerId + '"]');
+        if (container) container.classList.add('selected');
+      } else {
+        const el = getLayerEl(name);
+        if (el) el.classList.add('selected');
+        const container = canvas.querySelector('.repeat-group[data-name="' + name + '"]');
+        if (container) container.classList.add('selected');
+      }
+
       const tag = layerList.querySelector('.layer-tag[data-name="' + name + '"]');
       if (tag) tag.classList.add('selected');
       updateEditor();
@@ -514,10 +728,12 @@
       const order = data ? (data.stacking_order || []) : [];
       canvas.querySelectorAll('.layer').forEach(l => {
         l.classList.remove('selected');
-        // Restore original z-index from stacking_order
         const name = l.dataset.name;
         const idx = order.indexOf(name);
         l.style.zIndex = idx >= 0 ? idx : 0;
+      });
+      canvas.querySelectorAll('.repeat-group').forEach(g => {
+        g.classList.remove('selected');
       });
       layerList.querySelectorAll('.layer-tag').forEach(t => t.classList.remove('selected'));
       selectedName = null;
@@ -540,6 +756,21 @@
 
     // ─── Sync DOM → Data ───
     function syncLayoutFromDOM(name) {
+      // Check if it's a repeat group container
+      const container = canvas.querySelector('.repeat-group[data-name="' + name + '"]');
+      if (container) {
+        const layer = (data.layers || []).find(l => l.name === name);
+        if (layer) {
+          layer.layout = {
+            x: parseInt(container.style.left) || 0,
+            y: parseInt(container.style.top) || 0,
+            width: parseInt(container.style.width) || 0,
+            height: parseInt(container.style.height) || 0
+          };
+        }
+        return;
+      }
+
       const el = getLayerEl(name);
       if (!el) return;
       const layer = (data.layers || []).find(l => l.name === name);
@@ -659,16 +890,22 @@
         `;
       }
 
-      // Repeat config editor (shown for instances and panels)
+      // Repeat config editor (shown for instances, panels, and parent)
       let repeatConfigHTML = '';
-      const parent = getRepeatParent(layer);
-      if (parent) {
+      let configTarget = layer.is_repeat_parent ? layer : getRepeatParent(layer);
+      if (configTarget) {
+        const parent = configTarget;
         const config = parent.repeat_config || {};
         const area = config.area_layout || {};
         const mode = parent.repeat_mode || 'grid';
         const pLayout = parent.layout || {};
         const areaX = area.x !== undefined ? area.x : pLayout.x || 0;
         const areaY = area.y !== undefined ? area.y : pLayout.y || 0;
+        const pad = config.padding || {};
+        const pTop = (typeof pad === 'object') ? (pad.top || 0) : (pad || 0);
+        const pRight = (typeof pad === 'object') ? (pad.right || 0) : (pad || 0);
+        const pBottom = (typeof pad === 'object') ? (pad.bottom || 0) : (pad || 0);
+        const pLeft = (typeof pad === 'object') ? (pad.left || 0) : (pad || 0);
         if (mode === 'grid') {
           repeatConfigHTML = `
             <div style="background:#1e3a2f; border:1px solid #22c55e; border-radius:6px; padding:8px; margin-bottom:10px; font-size:11px;">
@@ -680,6 +917,12 @@
               <div class="row" style="margin-top:6px;">
                 <div class="field" style="margin-bottom:0;"><label>Area X</label><input type="number" id="rcAreaX" value="${areaX}"></div>
                 <div class="field" style="margin-bottom:0;"><label>Area Y</label><input type="number" id="rcAreaY" value="${areaY}"></div>
+              </div>
+              <div class="row" style="margin-top:6px;">
+                <div class="field" style="margin-bottom:0;"><label>Pad T</label><input type="number" id="rcPadT" value="${pTop}"></div>
+                <div class="field" style="margin-bottom:0;"><label>Pad R</label><input type="number" id="rcPadR" value="${pRight}"></div>
+                <div class="field" style="margin-bottom:0;"><label>Pad B</label><input type="number" id="rcPadB" value="${pBottom}"></div>
+                <div class="field" style="margin-bottom:0;"><label>Pad L</label><input type="number" id="rcPadL" value="${pLeft}"></div>
               </div>
               <div style="margin-top:8px;">
                 <button onclick="applyRepeatConfig()" style="background:#15803d; border:1px solid #22c55e; color:#fff; padding:5px 12px; border-radius:6px; font-size:11px; cursor:pointer;">Apply to Group</button>
@@ -696,6 +939,12 @@
               <div class="row" style="margin-top:6px;">
                 <div class="field" style="margin-bottom:0;"><label>Area X</label><input type="number" id="rcAreaX" value="${areaX}"></div>
                 <div class="field" style="margin-bottom:0;"><label>Area Y</label><input type="number" id="rcAreaY" value="${areaY}"></div>
+              </div>
+              <div class="row" style="margin-top:6px;">
+                <div class="field" style="margin-bottom:0;"><label>Pad T</label><input type="number" id="rcPadT" value="${pTop}"></div>
+                <div class="field" style="margin-bottom:0;"><label>Pad R</label><input type="number" id="rcPadR" value="${pRight}"></div>
+                <div class="field" style="margin-bottom:0;"><label>Pad B</label><input type="number" id="rcPadB" value="${pBottom}"></div>
+                <div class="field" style="margin-bottom:0;"><label>Pad L</label><input type="number" id="rcPadL" value="${pLeft}"></div>
               </div>
               <div style="margin-top:8px;">
                 <button onclick="applyRepeatConfig()" style="background:#15803d; border:1px solid #22c55e; color:#fff; padding:5px 12px; border-radius:6px; font-size:11px; cursor:pointer;">Apply to Group</button>
@@ -733,81 +982,72 @@
 
       const config = parent.repeat_config || {};
       const mode = parent.repeat_mode || 'grid';
-      const parentLayout = parent.layout || {};
-      const cellW = parentLayout.width || 100;
-      const cellH = parentLayout.height || 100;
-      const area = config.area_layout || {};
-      const startX = area.x !== undefined ? area.x : parentLayout.x || 0;
-      const startY = area.y !== undefined ? area.y : parentLayout.y || 0;
 
-      data.layers.forEach(layer => {
-        if (layer.is_repeat_instance && (layer.parent_id === parentId || layer.parent_name === parentId)) {
-          const row = layer.cell_row || 0;
-          const col = layer.cell_col || 0;
-          const idx = layer.cell_index || 0;
-          layer.layout = layer.layout || {};
+      // Update CSS on the existing DOM container (mirrors Figma auto layout)
+      const container = canvas.querySelector('.repeat-group[data-group-id="' + parentId + '"]');
+      if (!container) return;
 
-          if (mode === 'grid') {
-            const gapX = config.gap_x || 0;
-            const gapY = config.gap_y || 0;
-            layer.layout.x = startX + col * (cellW + gapX);
-            layer.layout.y = startY + row * (cellH + gapY);
-            layer.layout.width = cellW;
-            layer.layout.height = cellH;
-          } else if (mode === 'list') {
-            const gap = config.gap || 0;
-            const direction = config.direction || 'horizontal';
-            if (direction === 'horizontal') {
-              layer.layout.x = startX + idx * (cellW + gap);
-              layer.layout.y = startY;
-            } else {
-              layer.layout.x = startX;
-              layer.layout.y = startY + idx * (cellH + gap);
-            }
-            layer.layout.width = cellW;
-            layer.layout.height = cellH;
+      const autoFrame = container.querySelector('.repeat-autoframe');
+      if (!autoFrame) return;
+
+      const padding = resolvePadding(config);
+      autoFrame.style.padding = `${padding.top}px ${padding.right}px ${padding.bottom}px ${padding.left}px`;
+
+      if (mode === 'grid') {
+        const cols = config.cols || 1;
+        const gapX = config.gap_x || 0;
+        const gapY = config.gap_y || 0;
+        autoFrame.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+        autoFrame.style.gap = `${gapY}px ${gapX}px`;
+
+        // Update instance grid positions
+        const instances = data.layers.filter(l => l.is_repeat_instance && l.parent_id === parentId);
+        for (const inst of instances) {
+          const el = autoFrame.querySelector('.repeat-instance[data-name="' + inst.name + '"]');
+          if (el) {
+            el.style.gridColumn = (inst.cell_col || 0) + 1;
+            el.style.gridRow = (inst.cell_row || 0) + 1;
           }
         }
+      } else if (mode === 'list') {
+        const direction = config.direction || 'horizontal';
+        const gap = config.gap || 0;
+        autoFrame.style.flexDirection = direction === 'horizontal' ? 'row' : 'column';
+        autoFrame.style.gap = gap + 'px';
+      }
 
-        if (layer.is_repeat_panel && layer.repeat_parent_id === parentId) {
-          layer.layout = layer.layout || {};
-          if (mode === 'grid') {
-            const cols = config.cols || 1;
-            const rows = config.rows || 1;
-            const gapX = config.gap_x || 0;
-            const gapY = config.gap_y || 0;
-            layer.layout.x = startX;
-            layer.layout.y = startY;
-            layer.layout.width = cols * cellW + Math.max(0, cols - 1) * gapX;
-            layer.layout.height = rows * cellH + Math.max(0, rows - 1) * gapY;
-          } else if (mode === 'list') {
-            const count = config.count || 1;
-            const gap = config.gap || 0;
-            const direction = config.direction || 'horizontal';
-            if (direction === 'horizontal') {
-              layer.layout.x = startX;
-              layer.layout.y = startY;
-              layer.layout.width = count * cellW + Math.max(0, count - 1) * gap;
-              layer.layout.height = cellH;
-            } else {
-              layer.layout.x = startX;
-              layer.layout.y = startY;
-              layer.layout.width = cellW;
-              layer.layout.height = count * cellH + Math.max(0, count - 1) * gap;
-            }
-          }
-        }
-      });
+      // Update panel to fill container
+      const panel = data.layers.find(l => l.is_repeat_panel && l.repeat_parent_id === parentId);
+      if (panel) {
+        panel.layout = {
+          x: parent.layout.x,
+          y: parent.layout.y,
+          width: parent.layout.width,
+          height: parent.layout.height
+        };
+      }
     }
 
     function applyRepeatConfig() {
       if (!selectedName || !data) return;
       const layer = (data.layers || []).find(l => l.name === selectedName);
-      const parent = getRepeatParent(layer);
-      if (!parent) return;
+      let configTarget = layer.is_repeat_parent ? layer : getRepeatParent(layer);
+      if (!configTarget) return;
 
-      const config = parent.repeat_config || {};
-      const mode = parent.repeat_mode || 'grid';
+      const config = configTarget.repeat_config || {};
+      const mode = configTarget.repeat_mode || 'grid';
+
+      // Padding (common for both grid and list)
+      const padTEl = document.getElementById('rcPadT');
+      const padREl = document.getElementById('rcPadR');
+      const padBEl = document.getElementById('rcPadB');
+      const padLEl = document.getElementById('rcPadL');
+      config.padding = {
+        top: padTEl ? (parseInt(padTEl.value) || 0) : 0,
+        right: padREl ? (parseInt(padREl.value) || 0) : 0,
+        bottom: padBEl ? (parseInt(padBEl.value) || 0) : 0,
+        left: padLEl ? (parseInt(padLEl.value) || 0) : 0,
+      };
 
       if (mode === 'grid') {
         const gapXEl = document.getElementById('rcGapX');
@@ -826,9 +1066,9 @@
         if (areaXEl) { const v = parseInt(areaXEl.value); if (!isNaN(v)) { config.area_layout = config.area_layout || {}; config.area_layout.x = v; } }
         if (areaYEl) { const v = parseInt(areaYEl.value); if (!isNaN(v)) { config.area_layout = config.area_layout || {}; config.area_layout.y = v; } }
       }
-      parent.repeat_config = config;
+      configTarget.repeat_config = config;
 
-      recomputeRepeatLayouts(parent.id || parent.name);
+      recomputeRepeatLayouts(configTarget.id || configTarget.name);
       renderAll();
       selectLayer(selectedName);
       status('Repeat config applied to group', 'ok');
