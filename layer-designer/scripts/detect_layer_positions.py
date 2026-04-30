@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from path_manager import PathManager
 
 from matchers import FusionMatcher, _resolve_profile
+from visualize_detect import draw_layout_viz
 
 
 # Search scales around the planned size to handle crop_to_content drift
@@ -796,6 +797,8 @@ def main():
     parser.add_argument("--profile", default=None,
                         help="Matching profile: preset name (default, structure_heavy, color_heavy, texture_heavy) "
                              "or path to a JSON profile file. Auto-detects match_profile.json in output dir if omitted.")
+    parser.add_argument("--visualize", "-v", action="store_true",
+                        help="Generate a visualization image after detection showing planned (red) vs detected (green/yellow) positions.")
     args = parser.parse_args()
 
     # Default output path
@@ -828,6 +831,19 @@ def main():
     print("-" * 60)
     print(f"[DONE] {detected_count}/{total_count} layers matched successfully")
     print(f"[SAVE] {output_path}")
+
+    if args.visualize:
+        try:
+            viz_path = output_path.parent / f"detection_viz_{output_path.stem}.png"
+            out = draw_layout_viz(
+                preview_path=Path(args.preview),
+                detected_path=output_path,
+                output_path=viz_path,
+                layer_filter=args.layer,
+            )
+            print(f"[VIZ]  {out}")
+        except Exception as e:
+            print(f"[VIZ]  Visualization failed: {e}")
 
 
 if __name__ == "__main__":
