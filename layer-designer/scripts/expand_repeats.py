@@ -114,6 +114,55 @@ def _compute_panel_layout(parent: dict, config: dict) -> dict | None:
     return {"x": start_x, "y": start_y, "width": total_w, "height": total_h}
 
 
+def _compute_frame_layout(parent: dict, instances: list[dict], config: dict,
+                           panel_layout: dict | None = None) -> dict:
+    """Compute the container frame layout (parent becomes the whole frame).
+
+    Matches Figma import logic:
+    - If area_layout has width/height, use it directly as frame bounds.
+    - If panel exists, use panel bounds as frame bounds.
+    - Otherwise, use first instance position as origin, content + padding as size.
+    """
+    area = config.get("area_layout", {})
+
+    # 1. area_layout defines the full frame boundary
+    if area.get("width") is not None and area.get("height") is not None:
+        return {
+            "x": area.get("x", 0),
+            "y": area.get("y", 0),
+            "width": area["width"],
+            "height": area["height"],
+        }
+
+    # 2. Panel exists → frame matches panel
+    if panel_layout:
+        return {
+            "x": panel_layout.get("x", 0),
+            "y": panel_layout.get("y", 0),
+            "width": panel_layout.get("width", 100),
+            "height": panel_layout.get("height", 100),
+        }
+
+    # 3. No panel, no area_layout → compute from instances (legacy)
+    if not instances:
+        return dict(parent.get("layout", {}))
+
+    first_inst = instances[0]
+    min_x = first_inst["layout"]["x"]
+    min_y = first_inst["layout"]["y"]
+    max_right = max(inst["layout"]["x"] + inst["layout"]["width"] for inst in instances)
+    max_bottom = max(inst["layout"]["y"] + inst["layout"]["height"] for inst in instances)
+
+    pt, pr, pb, pl = _resolve_padding(config)
+
+    return {
+        "x": min_x,
+        "y": min_y,
+        "width": (max_right - min_x) + pl + pr,
+        "height": (max_bottom - min_y) + pt + pb,
+    }
+
+
 def _build_panel_layer(parent: dict, config: dict) -> dict | None:
     """Build a panel background layer if auto_panel is enabled."""
     panel_cfg = config.get("auto_panel", {})
@@ -256,18 +305,28 @@ def expand_layer_plan(layer_plan: dict, phase: str = "rough") -> dict:
         if repeat_mode in ("grid", "list") and config:
             parent_id = layer.get("id", layer.get("name", ""))
 
-            # 1. Preserve parent layer (mark for generation)
+            # 1. Build instances first (uses original parent layout as cell size)
+            instances = _build_instances(layer, config)
+
+            # 2. Build panel if enabled (before computing frame layout)
+            panel = _build_panel_layer(layer, config)
+
+            # 3. Compute frame layout: parent becomes the whole container frame
+            panel_layout = panel.get("layout") if panel else None
+            frame_layout = _compute_frame_layout(layer, instances, config, panel_layout)
+
+            # 4. Update parent layout to frame bounds
             parent_copy = dict(layer)
             parent_copy["is_repeat_parent"] = True
+            parent_copy["layout"] = frame_layout
             expanded_layers.append(parent_copy)
 
-            # 2. Build panel if enabled
-            panel = _build_panel_layer(layer, config)
+            # 5. Update panel to match frame bounds
             if panel:
+                panel["layout"] = dict(frame_layout)
                 expanded_layers.append(panel)
 
-            # 3. Build instances (preview only, no separate generation)
-            instances = _build_instances(layer, config)
+            # 6. Add instances
             expanded_layers.extend(instances)
 
             meta = {
