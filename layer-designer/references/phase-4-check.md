@@ -84,11 +84,12 @@ This step is **not run by default**. It is offered to the user in Step 3 when th
 
 **What it does**:
 1. Reads each layer PNG (post-rembg/crop) as a template
-2. Uses `layer_plan.json` layout as reference origin + scale
-3. Searches a large ROI around the planned position (±200% margin)
-4. Tries multiple scales (0.65×–1.35× planned size) to handle `crop_to_content` drift
-5. Matches via downsampled SSD + fine refinement
-6. Outputs `04-check/detected_layouts.json`
+2. Searches a large ROI around the planned position (±200% margin)
+3. Tries multiple scales (0.65×–1.35× planned size) to handle `crop_to_content` drift
+4. Matches via downsampled SSD + fine refinement
+5. Outputs `04-check/detected_layouts.json`
+
+**【实验性的】Adaptive multi-feature profiles**: The matcher supports profile-based fusion of multiple visual features (RGB SSD, Sobel gradient, Canny edge distance, etc.). The agent inspects the preview, selects a profile (`default`, `structure_heavy`, `color_heavy`, `texture_heavy`), writes `match_profile.json`, and the detection script reads it. See [`references/matching-profiles.md`](references/matching-profiles.md) for the selection guide. Use `--profile <name>` to enable.
 
 **Limitations** — tell the user before offering:
 - Layers with **high transparency** (opacity < 0.85) are skipped automatically because the preview shows blended colors while the extracted layer is opaque
@@ -97,7 +98,7 @@ This step is **not run by default**. It is offered to the user in Step 3 when th
 
 **When to run**: Only after the user confirms they want it. The agent should NOT run this automatically.
 
-**Workflow**:
+**Detection Workflow**:
 ```bash
 # 1. User confirms they want algorithmic alignment
 # 2. Run detection (read-only, does not modify any layer images)
@@ -115,7 +116,14 @@ python scripts/detect_layer_positions.py \
   --layer sidebar \
   --layer header
 
-# 3. Apply detected layouts (backs up existing enhanced_layer_plan.json)
+# 2c. 【实验性的】Override matching profile manually
+python scripts/detect_layer_positions.py \
+  --project my-app --config config.json \
+  --preview output/my-app/01-requirements/previews/preview_v2_001.png \
+  --phase rough \
+  --profile structure_heavy
+
+# 4. Apply detected layouts (backs up existing enhanced_layer_plan.json)
 python scripts/generate_preview.py \
   --config config.json \
   --project my-app \
