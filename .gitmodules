@@ -1,6 +1,4 @@
 [submodule "layer-designer/figma-plugin"]
 	path = layer-designer/figma-plugin
 	url = git@github.com:bobbyz1x2c3/layer-designer-figma-plugin.git
-[submodule "layer-designer/layer-designer/figma-plugin"]
-	path = layer-designer/layer-designer/figma-plugin
-	url = git@github.com:bobbyz1x2c3/layer-designer-figma-plugin.git
+
