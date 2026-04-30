@@ -32,8 +32,11 @@ from matchers import FusionMatcher, _resolve_profile
 from visualize_detect import draw_layout_viz
 
 
-# Search scales around the planned size to handle crop_to_content drift
-DEFAULT_SCALES = [0.65, 0.75, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.20, 1.30, 1.35]
+# Relative scale factors around the "contain-fit" base scale.
+# Base scale is computed per-layer as min(plan_w / tpl_w, plan_h / tpl_h)
+# so that scale=1.0 means the template fits exactly inside the planned rect
+# while preserving its original aspect ratio (object-fit: contain).
+DEFAULT_RELATIVE_SCALES = [0.70, 0.85, 0.95, 1.00, 1.05, 1.15, 1.30]
 
 # ROI expands planned size by this factor on each side (3.5 = ±250% margin)
 ROI_FACTOR = 3.5
@@ -59,7 +62,7 @@ def _get_detection_config(config_path: str | None) -> dict:
         "warn_offset_threshold": 0.30,
         "ssd_confidence_threshold": 20000.0,
         "roi_factor": 3.5,
-        "search_scales": DEFAULT_SCALES,
+        "search_scales": DEFAULT_RELATIVE_SCALES,
         "fine_radius": 12,
         "downsample": 4,
     }
@@ -350,7 +353,15 @@ def detect_layer(
     base_h, base_w = tpl_base.shape[:2]
 
     coarse_scores = []
-    for s in scales:
+    # Compute base scale so that template fits inside planned rect (contain)
+    tpl_orig_h, tpl_orig_w = tpl_rgb.shape[:2]
+    base_scale = min(pw / max(1, tpl_orig_w), ph / max(1, tpl_orig_h))
+    base_scale = max(0.05, min(5.0, base_scale))
+
+    # Convert relative scales to absolute scales
+    abs_scales = [base_scale * s for s in scales]
+
+    for s in abs_scales:
         target_w = max(1, int(base_w * s))
         target_h = max(1, int(base_h * s))
 
@@ -575,7 +586,7 @@ def _prepare_detection(
         scale_y = preview_h / canvas_h
         canvas_w, canvas_h = preview_w, preview_h
 
-    scales = scales or det_cfg.get("search_scales", DEFAULT_SCALES)
+    scales = scales or det_cfg.get("search_scales", DEFAULT_RELATIVE_SCALES)
     roi_factor = det_cfg.get("roi_factor", 3.5)
     ssd_threshold = det_cfg.get("ssd_confidence_threshold", 20000.0)
     downsample = det_cfg.get("downsample", 4)
