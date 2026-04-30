@@ -61,7 +61,7 @@ When the user first invokes this skill, send a structured onboarding message. Do
 6. 预览质量模式：
    - **标准预览**（默认）：early_size ≈ 25–40% 面积，quality = low，成本低、速度快
    - **高质量预览**：early_size ≈ 60% 面积，quality = medium，细节更丰富，适合对精细度要求高的设计
-   - **快速通道**：启用后 Phase 1~2 合并，只需确认 1 张预览即可进入分层阶段（默认关闭）
+   - **快速通道**：启用后只生成 1 张预览（默认关闭）
 
 7. 重复元素模式（可选，Phase 2 自动检测）：
    - 如果设计中有大量重复的相同元素（如卡片网格、图标矩阵、列表项），我会在 Phase 2 自动检测并提示你启用「复用模式」
@@ -102,8 +102,8 @@ Gather the following from the user's response. Use clarifying questions if any i
 - **Reference image provided** → `reference-image` mode
 
 **Determine fast track** based on user response:
-- User explicitly says "yes" / "启用" / "快速模式" → Fast Track (merge Phase 1~2)
-- No response or "no" → Standard workflow
+- User explicitly says "yes" / "启用" / "快速模式" → Fast Track (generate 1 preview instead of 3)
+- No response or "no" → Standard workflow (generate 3 previews)
 
 ---
 
@@ -182,7 +182,7 @@ After validation succeeds, read `01-requirements/size_plan.json` to obtain:
 - Standard preview quality: `low`
 - High-quality preview quality: `medium`
 
-**Fast Track mode**: Generate **1 preview image** only. Same quality rules.
+**Fast Track mode**: Generate **1 preview image** only (instead of 3). Same quality rules. Phase 2 is still required after preview confirmation — the only difference is fewer preview options.
 
 ---
 
@@ -196,7 +196,7 @@ python scripts/generate_image.py generate \
 ```
 
 - **Standard**: Invoke 3 times (or once with `--n 3` if API supports it)
-- **Fast Track**: Invoke 1 time only
+- **Fast Track**: Invoke 1 time only (single preview)
 - Prompt: see [references/prompt-templates.md](references/prompt-templates.md) "Phase 1: Preview Generation"
 - Save each via `PathManager.get_preview_path(version=1, index=N)`
 
@@ -214,7 +214,7 @@ python scripts/generate_image.py edit \
 ```
 
 - **Standard**: Invoke 3 times
-- **Fast Track**: Invoke 1 time only
+- **Fast Track**: Invoke 1 time only (single preview)
 - Prompt: see [references/prompt-templates.md](references/prompt-templates.md) "Phase 1: Reference-Image Preview Generation"
 - Save each via `PathManager.get_preview_path(version=1, index=N)`
 
@@ -229,6 +229,7 @@ python scripts/generate_image.py edit \
 **Fast Track mode**:
 1. Present the single preview image to the user
 2. Ask: "这是根据你的需求生成的预览，请确认或提出修改意见。"
+3. After user confirms, proceed to Phase 2 (same as Standard mode).
 
 3. Maintain a conversation log of all previews and feedback (append to requirements phase log)
 
@@ -274,7 +275,8 @@ If user requests changes (NOT "OK"):
      --output {revised_preview_path} --size {early_w}x{early_h} --quality {preview_quality}
    ```
 3. Present the revised preview and ask for confirmation
-4. In fast track, revisions are unlimited. If user repeatedly asks for major changes, suggest switching to standard mode.
+4. Revisions are unlimited. If user repeatedly asks for major changes, suggest switching to standard mode.
+5. After user confirms, proceed to Phase 2 (same as Standard mode).
 
 **Parallel execution** (if `parallel_generation` enabled and agent supports subagents):
 - Multiple independent revisions can be spawned concurrently
@@ -295,114 +297,143 @@ If user requests changes (NOT "OK"):
 
 ---
 
-## Step 9: Phase 2 — Layer Plan (Fast Track Only)
+---
 
-> **In Fast Track mode, Phase 2 is merged into Phase 1 and executed automatically after preview confirmation.**
-> **In Standard mode, skip this step and proceed to the separate Phase 2 document.**
+### Repeat Mode Detection (Grid / List)
 
-**⚠️ CRITICAL: Fast Track does NOT skip `layer_plan.json`.** The layer plan is just as essential as in Standard mode — it drives Phase 3 layer isolation, Phase 4 preview, and all subsequent phases.
+During visual analysis, identify whether any regions contain **multiple identical or near-identical elements arranged in a grid or list**:
 
-**Fast Track requires only ONE user confirmation** (Step 8 preview OK). After that, the agent automatically generates and saves the layer plan — **no second OK needed**.
+| Pattern | `repeat_mode` | Examples |
+|---------|--------------|----------|
+| Grid (rows × columns) | `grid` | Icon matrix, card grid, photo gallery |
+| Horizontal list | `list` + `direction: horizontal` | Tab bar, navigation pills, toolbar buttons |
+| Vertical list | `list` + `direction: vertical` | Sidebar menu, settings list, vertical tabs |
 
-After the user confirms the preview (Step 8 OK):
+**When to use repeat_mode:**
+- Elements are **visually identical** (same shape, size, style)
+- Only content differs slightly (text label, icon) — content can be handled separately
+- Using `repeat_mode` reduces API calls from N (one per cell) to 1 (one per parent)
 
-1. **Visually analyze the confirmed preview** using the agent's visual understanding capability
-2. Produce a **complete `layer_plan.json`** directly from the preview. The JSON must include:
+**When NOT to use repeat_mode:**
+- Each element has **distinctly different visuals** (e.g., each card has a unique product photo)
+- Elements vary significantly in size or shape
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `project` | ✅ | Project name |
-| `dimensions` | ✅ | `{"width": W, "height": H}` — full canvas size |
-| `layers` | ✅ | Array of layer objects (see below) |
-| `stacking_order` | ✅ | Array of layer names, bottom → top |
-| `style_anchor` | ✅ | Style summary string for all prompts |
+**Carrier panel detection (MUST be done alongside repeat detection):**
 
-**Each layer object must contain**:
+When you detect a grid/list, always check whether the repeating elements sit inside a **shared carrier panel**:
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | ✅ | Display name (can be Chinese or English) |
-| `id` | ✅ | Directory-safe identifier (English, kebab/snake case). Used as folder name in `03-rough-design/` and `06-refinement-layers/`. |
-| `description` | ✅ | Content description for prompt generation |
-| `layout` | ✅ | `{"x", "y", "width", "height"}` — bounding box in full canvas coordinates |
-| `quality_tier` | ✅ | `low` / `medium` / `high` |
-| `opacity` | ✅ | `0.2` ~ `1.0` — visual opacity when stacked over other layers (see judgment rules below) |
-| `is_background` | Optional | `true` for background layer |
-| `stack_order` | Optional | Integer position in stack (used if no top-level `stacking_order`) |
-| `states` | Optional | Array of state names (e.g., `["hover", "active"]`) |
-| `repeat_mode` | Optional | `"grid"` or `"list"` — see Phase 2 Step 5 for detection rules |
-| `repeat_config` | Optional | Configuration dict for repeat expansion (see Phase 2) |
+| Panel Evidence | Description | `auto_panel` Action |
+|---------------|-------------|---------------------|
+| **Background shape** | Rounded rectangle, card, bar, pill behind all cells | `enabled: true` |
+| **Texture / pattern fill** | Gradient, noise, fabric, glass, or decorative texture on the container | `enabled: true` |
+| **Decorative border** | Outline, ornamental frame, corner accents, gold trim | `enabled: true` |
+| **Shadow / glow** | Drop shadow, inner glow, ambient occlusion around the container | `enabled: true` |
+| **No shared container** | Cells float directly on the main background, each has its own isolated background | Omit `auto_panel` |
+| **Uncertain** | Partial background or ambiguous edges | Ask user |
 
-**Visual Opacity Judgment** (same as Standard Mode Phase 2 Step 5):
+The carrier panel is **NOT** the main page background — it is a secondary container that exists specifically to hold the grid/list items. It must be extracted as a separate layer so that the repeat parent layer (the single cell) can be composited on top of it cleanly.
 
-For each layer, visually judge whether it should be **semi-transparent** when stacked over other layers:
+**`repeat_config` fields:**
 
-| Opacity | Visual Type | Examples |
-|---------|-------------|----------|
-| `1.0` | Fully opaque | Solid backgrounds, characters, icons, text labels |
-| `0.75–0.9` | Slightly translucent | Frosted glass panels, card backgrounds with blur |
-| `0.5–0.7` | Moderately transparent | Floating overlays, HUD elements, modal backdrops |
-| `0.2–0.4` | Highly transparent | Glow effects, particle layers, vignettes |
+For `grid`:
+| Field | Description | Example |
+|-------|-------------|---------|
+| `cols` | Number of columns | `3` |
+| `rows` | Number of rows | `2` |
+| `area_layout` | **Default panel boundary** `{x, y, width, height}`. Defines the full container area and serves as the panel dimensions by default. When `width/height` are provided, cells are positioned inside this area subject to `padding`, and the panel itself uses these exact dimensions. Only use `auto_panel.layout` if the panel needs to deviate from this boundary. When `width/height` are omitted, falls back to legacy mode where `x/y` is the direct cell start. | `{"x": 200, "y": 150, "width": 620, "height": 420}` |
+| `padding` | Inner padding between panel edge and cells. Can be a single number (all sides) or `{top, right, bottom, left}`. Defaults to `0`. When `0`, `area_layout` is the exact cell area (no panel gap). | `24` or `{"top": 24, "right": 24, "bottom": 24, "left": 24}` |
+| `gap_x` | Horizontal gap between cells (px) | `20` |
+| `gap_y` | Vertical gap between cells (px) | `20` |
+| `auto_panel` | Optional panel background config. Only needed when the panel deviates from `area_layout`. | See below |
 
-**How to judge**:
-- Use the agent's visual understanding on the confirmed preview
-- A glass panel that shows underlying content underneath → translucent
-- A solid button or icon with no visible background bleed → opaque
-- A glow or shadow effect → highly transparent
+For `list`:
+| Field | Description | Example |
+|-------|-------------|---------|
+| `direction` | `horizontal` or `vertical` | `horizontal` |
+| `count` | Number of items | `5` |
+| `area_layout` | **Default panel boundary** `{x, y, width, height}`. Defines the full container area and serves as the panel dimensions by default. When `width/height` are provided, cells are positioned inside this area subject to `padding`, and the panel itself uses these exact dimensions. Only use `auto_panel.layout` if the panel needs to deviate from this boundary. When `width/height` are omitted, falls back to legacy mode where `x/y` is the direct cell start. | `{"x": 100, "y": 300, "width": 500, "height": 80}` |
+| `padding` | Inner padding between panel edge and cells. Can be a single number (all sides) or `{top, right, bottom, left}`. Defaults to `0`. When `0`, `area_layout` is the exact cell area (no panel gap). | `16` or `{"top": 16, "right": 16, "bottom": 16, "left": 16}` |
+| `gap` | Gap between items (px) | `16` |
+| `auto_panel` | Optional panel background config. Only needed when the panel deviates from `area_layout`. | See below |
 
-**Example `layer_plan.json` structure**:
+**`auto_panel` — 容器背景层（可选）**
+
+当 grid/list 有明确的容器背景（如卡片矩阵的底板、标签栏的底条）时，可以在 `repeat_config` 中配置 `auto_panel`：
+
+| Field | Required | Description | Example |
+|-------|----------|-------------|---------|
+| `enabled` | ✅ | `true` to generate panel | `true` |
+| `id` | Optional | Panel layer directory-safe ID | `"card_panel"` |
+| `name` | Optional | Display name | `"卡片底板"` |
+| `description` | Optional | Content for prompt generation | `"White rounded panel background"` |
+| `opacity` | Optional | Panel opacity | `1.0` |
+| `quality_tier` | Optional | Generation quality | `"low"` |
+| `layout` | Optional | **Override** for panel position/size. Use ONLY when the panel needs to deviate from `area_layout` — e.g., the carrier shape has a drop shadow extending beyond the cell area, or the panel is visually offset from the cell grid. In the common case where the panel perfectly matches the cell area, omit this field and let `area_layout` define the boundary. | `{"x": 190, "y": 140, "width": 620, "height": 420}` |
+
+> ⚠️ **Naming convention for `auto_panel.id`**: MUST use `{parent_id}_panel` format with **underscore** (`_`).
+> 
+> - Correct: `"equipment_panel"`, `"card_panel"`, `"sidebar_panel"`
+> - Incorrect: `"equipment-panel"`, `"card panel"`, `"equipmentPanel"`
+> 
+> The underscore separator is required because `expand_repeats.py` uses `f"{parent_id}_panel"` as the default panel ID, and downstream scripts (PathManager, generate_preview, Figma plugin) rely on this convention to locate the panel directory and PNG files. Using hyphens or other separators will cause source path mismatches.
+
+**Panel layout 计算方式（优先级从高到低）：**
+
+| 优先级 | 来源 | 说明 |
+|--------|------|------|
+| **1. 手动覆盖** | `auto_panel.layout` | 最高优先级，直接覆盖所有计算 |
+| **2. area_layout** | `repeat_config.area_layout.width/height` | `area_layout` 显式定义 panel 边界时，直接使用其 `width/height` |
+| **3. 自动推导** | `cols/rows/gap` 或 `count/direction/gap` | 从 cell 数量和间距推导 panel 大小（向后兼容） |
+
+**Cells 定位规则：**
+
+| 条件 | 行为 |
+|------|------|
+| `area_layout` 有 `width/height` | `area_layout` 就是 panel 边界（默认）；cells 起始位置 = `area_layout.x + padding.left`, `area_layout.y + padding.top` |
+| `area_layout` 只有 `x/y`（legacy） | `area_layout.x/y` 就是 cells 的直接起始位置；无 panel 概念 |
+| `padding = 0`（或无 padding） | cells 紧贴 `area_layout` 边缘，panel 和内容区重合 |
+| 需要 panel 偏离 `area_layout` | 配置 `auto_panel.layout` 覆盖；此时 panel 用覆盖值，cells 仍按 `area_layout + padding` 定位 |
+
+> **原则**：`area_layout` 就是 panel 的默认边界。只有在视觉上 panel 比 cell 区域大（如阴影外扩）或小（如内凹底板）时，才需要 `auto_panel.layout`。常规情况下完全不需要配置 `auto_panel.layout`。
+
+Panel 在 `stacking_order` 中自动置于实例**下方**。
+
+**Example `layer_plan.json` with repeat_mode + auto_panel:**
 ```json
 {
-  "project": "my-dashboard",
-  "dimensions": {"width": 1920, "height": 1080},
-  "style_anchor": "Flat design, primary blue #3B82F6, Inter font, 8px grid, rounded 12px corners, soft shadows",
-  "layers": [
-    {
-      "id": "background",
-      "name": "背景",
-      "description": "Solid dark navy fill with subtle gradient texture",
-      "is_background": true,
-      "quality_tier": "low",
+  "name": "商品卡片",
+  "id": "product_card",
+  "description": "Product card with image, title, price",
+  "layout": {"x": 0, "y": 0, "width": 180, "height": 240},
+  "quality_tier": "medium",
+  "opacity": 1.0,
+  "repeat_mode": "grid",
+  "repeat_config": {
+    "cols": 3,
+    "rows": 2,
+    "area_layout": {"x": 200, "y": 150, "width": 620, "height": 420},
+    "padding": {"top": 24, "right": 24, "bottom": 24, "left": 24},
+    "gap_x": 20,
+    "gap_y": 20,
+    "auto_panel": {
+      "enabled": true,
+      "id": "card_panel",
+      "name": "卡片底板",
+      "description": "White rounded rectangle panel background for card grid",
       "opacity": 1.0,
-      "layout": {"x": 0, "y": 0, "width": 1920, "height": 1080}
-    },
-    {
-      "id": "sidebar",
-      "name": "侧边栏",
-      "description": "Left navigation bar with icons and labels",
-      "quality_tier": "medium",
-      "opacity": 0.9,
-      "layout": {"x": 0, "y": 80, "width": 240, "height": 1000}
-    },
-    {
-      "id": "header",
-      "name": "顶部标题栏",
-      "description": "Top bar with logo, search input, avatar",
-      "quality_tier": "medium",
-      "opacity": 1.0,
-      "layout": {"x": 240, "y": 0, "width": 1680, "height": 80}
+      "quality_tier": "low"
     }
-  ],
-  "stacking_order": ["background", "sidebar", "header"]
+  }
 }
 ```
 
+---
+
 3. **Save `layer_plan.json`** via `PathManager.get_layer_plan_path()` — no user confirmation needed
 
-4. **Detect repeat patterns** (same as Standard Mode Phase 2 Step 5):
-   - Inspect the confirmed preview for grid/list patterns
-   - **Panel / carrier detection**: When repeat patterns are detected, also check whether the grid/list has a **carrier panel** — a visible container that holds the repeating elements, including:
-     - Background shape (rounded rectangle, card, bar, pill)
-     - Texture or pattern fill on that shape
-     - Decorative borders, outlines, or ornamental framing
-     - Drop shadow, inner glow, or ambient occlusion around the container
-     - Any visual element that is **shared across all cells** and **positioned beneath them**
-   - If a carrier panel exists → include `auto_panel: {enabled: true, ...}` in `repeat_config`
-   - If cells float directly on the main background with no shared container → omit `auto_panel`
-   - If uncertain → ask user: "检测到重复布局，该区域的子项是否共享一个容器面板（底板/卡片/条）？"
-   - If user confirmed in Phase 1 Step 2 ("是否有大量重复元素"), use that as a hint but still verify visually
 
-5. **Present the layer plan to the user** (informational only, for transparency):
+4. **Present the layer plan to the user** (informational only, for transparency):
+包含图层信息，图层尺寸大小，如果有重复模式，需要告知重复模式的类型和是否有底板
 ```
 预览已确认。我已自动生成分层方案，即将进入粗稿分层阶段：
 
@@ -419,30 +450,12 @@ Style Anchor: 暗色主题，圆角 8px，蓝色主色调 #3B82F6...
 如需要调整图层方案，可随时告知。现在开始生成粗稿图层。
 ```
 
-**Output upon exit (Fast Track)**:
+**Output upon exit (both modes)**:
 - Confirmed preview image path
-- **`layer_plan.json`** saved to `02-confirmation/` (⚠️ **REQUIRED** for all downstream phases)
 - `size_plan.json` with validated dimensions (from Step 3)
-- `style_anchor` string for all subsequent prompts
 
 ---
 
-**Exit Condition (Standard mode)**: User replies "OK" and names the chosen preview image. Proceed to separate Phase 2.
+**Exit Condition (both Standard and Fast Track)**: User replies "OK" (and names the chosen preview image for Standard). Proceed to Phase 2.
 
-**Exit Condition (Fast Track mode)**: **After Step 8 user OK, automatically execute Step 9 and enter Phase 3.** No second confirmation required. Ensure the following before proceeding:
-
-1. ✅ `layer_plan.json` is **saved** to `02-confirmation/layer_plan.json`
-2. ✅ `size_plan.json` exists in `01-requirements/` (from Step 3)
-3. ✅ `style_anchor` is extracted and written to `layer_plan.json`
-
-> ⚠️ **Do NOT enter Phase 3 if `layer_plan.json` is missing or incomplete.** Phase 3 requires `layer_plan.json` to know which layers to generate, their `layout` for per-layer sizing, and their `id` for folder naming. Without it, the workflow cannot proceed.
-
-**Pre-Phase-3 checklist (Fast Track)**:
-```
-□ layer_plan.json exists and contains: dimensions, layers[], stacking_order[], style_anchor
-□ size_plan.json exists and contains: full_size, early_size
-□ style_anchor string is non-empty
-□ All layer objects have: id, name, description, layout, quality_tier, opacity
-```
-
-Only after all checks pass: proceed to Phase 3.
+> ⚠️ **Phase 2 is required for both modes.** Fast Track only reduces the number of previews in Phase 1 (1 vs 3). It does NOT skip Phase 2 layer plan confirmation.

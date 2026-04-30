@@ -182,21 +182,20 @@ Two independent choices at Phase 1:
 **How to choose**: At Phase 1 Step 2, ask the user:
 > "请选择预览质量模式：标准预览（默认，更快更省）或高质量预览（保留约 60% 面积细节，质量 medium）？"
 
-### 8.2 Fast Track Mode (affects workflow steps, independent of quality)
+### 8.2 Fast Track Mode (affects preview count only, independent of quality)
 
 | Feature | Standard Workflow | Fast Track |
 |--------|-------------------|------------|
 | Previews | 3 options | 1 option |
 | Revisions | Unlimited | Unlimited |
-| Phase 2 | Separate phase | Merged into Phase 1 Step 9 |
-| Detail level | Full detail | Simplified details |
-| OK Checkpoints | 2 (Phase 1 + Phase 2) | 1 (after preview) |
-| Best For | New designs | Quick iterations / known assets |
+| Phase 2 | Required | Required (same as Standard) |
+| OK Checkpoints | 2 (Phase 1 preview + Phase 2 layer plan) | 2 (same as Standard) |
+| Best For | New designs, exploration | Quick iterations, known assets |
 
 **How to choose**: At Phase 1 Step 2, ask the user:
-> "是否启用快速通道？（是/否）" — 启用后 Phase 1~2 合并，只需确认 1 张预览即可进入分层阶段。
+> "是否启用快速通道？（是/否）" — 启用后只生成 1 张预览（而非 3 张），减少选择时间。Phase 2 图层方案确认仍然需要。
 
-**Modes can be combined**: High-Quality + Fast Track = 1 high-quality preview, then straight to layer generation. Standard + Standard Workflow = 3 low-quality previews, then separate Phase 2 confirmation.
+**Modes can be combined**: High-Quality + Fast Track = 1 high-quality preview, then Phase 2 confirmation. Standard + Standard Workflow = 3 low-quality previews, then Phase 2 confirmation.
 
 ---
 
@@ -237,8 +236,8 @@ Two independent choices at Phase 1:
    - Phase 3 / Phase 6 per-layer generation: `compute_layer_size()` MUST be called for every non-background layer to guarantee a compliant canvas size matching the layer's aspect ratio
    - Phase 5 / Phase 8: Always use the already-validated `full_size` from `size_plan.json`
    - Never pass a raw user-provided or manually-constructed size string directly to `generate_image.py` without verifying it first
-3. **Explicit OK required**: No phase transition without explicit "OK" confirmation (except Fast Track single-checkpoint).
-4. **Style anchor persistence**: Extracted in Phase 2 (or Phase 1 Step 9), must be included in ALL subsequent generation prompts.
+3. **Explicit OK required**: No phase transition without explicit "OK" confirmation.
+4. **Style anchor persistence**: Extracted in Phase 2, must be included in ALL subsequent generation prompts.
 5. **Per-layer canvas with matching aspect ratio**: For each non-background layer, compute a compliant canvas size that matches the layer's aspect ratio from `layer_plan.json` using `path_manager.compute_layer_size()`. The element is then prompted to fill this canvas proportionally.
 6. **Quality adaptive**:
    - **API testing / validation**: Always use `quality=low` when testing or validating a new API endpoint or provider.
@@ -258,7 +257,7 @@ Two independent choices at Phase 1:
     - **Adaptive multi-feature profiles** (`default`, `structure_heavy`, `color_heavy`, `texture_heavy`): The matcher fuses multiple visual features (RGB SSD, Sobel gradient, Canny edge, HSV color, LBP texture) weighted by a project-specific profile. The agent inspects the preview and selects the profile before detection. **General rule: use `default` unless the UI clearly falls into one of the specialized categories.** See [`references/matching-profiles.md`](references/matching-profiles.md) for the full selection guide. Enabled via `--profile <name>`.
     - **`--force` flag**: Bypasses opacity/background/repeat safety checks. Only use when the user **explicitly demands** detection on a layer that would normally be skipped (e.g., a semitransparent panel or a background shape the user wants aligned). Warn the user that forced detection may produce unreliable results.
 12. **Repeat mode (grid/list)**: 
-    - In **Phase 2 (or Phase 1 Step 9 for Fast Track)**, the agent MUST visually inspect the confirmed preview for repeating patterns (grid/list) and ask the user before applying `repeat_mode`.
+    - In **Phase 2**, the agent MUST visually inspect the confirmed preview for repeating patterns (grid/list) and ask the user before applying `repeat_mode`.
     - **High confidence** (visually identical elements): Auto-suggest with savings summary.
     - **Medium confidence** (similar structure but different content): Prompt user with options (enable / disable / mixed).
     - **User response**: "启用" → apply; "不启用" → skip; "只启用 XX" → selective apply.

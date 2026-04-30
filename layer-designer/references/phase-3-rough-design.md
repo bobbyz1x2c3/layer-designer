@@ -24,7 +24,7 @@
 ## Step 1: Read Inputs
 
 Before starting, ensure you have:
-- `layer_plan.json` from Phase 2 (or Phase 1 Step 9 in Fast Track)
+- `layer_plan.json` from Phase 2
 - `size_plan.json` with `early_size` for this phase
 - Confirmed preview image from Phase 1
 - `style_anchor` string

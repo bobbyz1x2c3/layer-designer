@@ -1,8 +1,8 @@
-# Phase 2: Confirmation (Standard Mode Only)
+# Phase 2: Confirmation
 
 **Goal**: Analyze the confirmed preview visually and produce a formal layer breakdown plan.
 
-**When to read this file**: Agent MUST read this file when entering Phase 2 of the workflow (Standard mode only). If Fast Track mode was selected, Phase 2 was already completed inside Phase 1 Step 9 — skip directly to Phase 3.
+**When to read this file**: Agent MUST read this file when entering Phase 2 of the workflow. This phase is **required for both Standard and Fast Track modes** — Fast Track only reduces the number of previews in Phase 1 (1 vs 3), but does NOT skip Phase 2.
 
 **Input**: The preview image confirmed in Phase 1 Step 8.
 
@@ -126,6 +126,13 @@ For `list`:
 | `opacity` | Optional | Panel opacity | `1.0` |
 | `quality_tier` | Optional | Generation quality | `"low"` |
 | `layout` | Optional | **Override** for panel position/size. Use ONLY when the panel needs to deviate from `area_layout` — e.g., the carrier shape has a drop shadow extending beyond the cell area, or the panel is visually offset from the cell grid. In the common case where the panel perfectly matches the cell area, omit this field and let `area_layout` define the boundary. | `{"x": 190, "y": 140, "width": 620, "height": 420}` |
+
+> ⚠️ **Naming convention for `auto_panel.id`**: MUST use `{parent_id}_panel` format with **underscore** (`_`).
+> 
+> - Correct: `"equipment_panel"`, `"card_panel"`, `"sidebar_panel"`
+> - Incorrect: `"equipment-panel"`, `"card panel"`, `"equipmentPanel"`
+> 
+> The underscore separator is required because `expand_repeats.py` uses `f"{parent_id}_panel"` as the default panel ID, and downstream scripts (PathManager, generate_preview, Figma plugin) rely on this convention to locate the panel directory and PNG files. Using hyphens or other separators will cause source path mismatches.
 
 **Panel layout 计算方式（优先级从高到低）：**
 
