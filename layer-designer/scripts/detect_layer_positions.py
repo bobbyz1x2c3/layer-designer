@@ -28,6 +28,8 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).parent))
 from path_manager import PathManager
 
+from matchers import FusionMatcher, _resolve_profile
+
 
 # Search scales around the planned size to handle crop_to_content drift
 DEFAULT_SCALES = [0.65, 0.75, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10, 1.20, 1.30, 1.35]
@@ -291,6 +293,7 @@ def detect_layer(
     fine_radius: int = 12,
     opacity: float = 1.0,
     force: bool = False,
+    fusion_matcher: FusionMatcher | None = None,
 ) -> dict:
     """Detect a single layer's position via multi-scale template matching.
 
@@ -369,9 +372,6 @@ def detect_layer(
         if hc > Hc or wc > Wc:
             continue
 
-        ssd_map = _ssd_via_fft(roi_coarse, tpl_coarse, alpha_coarse)
-        min_ssd = float(ssd_map.min())
-
         # Store the FULL-resolution resized template for fine matching later.
         # CRITICAL: use the template's ORIGINAL aspect ratio, NOT the planned size.
         # Planned size is an estimate; the cropped PNG's actual proportions are the
@@ -390,10 +390,22 @@ def detect_layer(
         ) / 255.0
         alpha_resized[alpha_resized < 0.02] = 0.0
 
-        coarse_scores.append((min_ssd, s, tpl_resized, alpha_resized))
+        if fusion_matcher is not None:
+            # Fusion-based coarse scoring (higher = better)
+            desc = fusion_matcher.extract(tpl_coarse, alpha_coarse)
+            result = fusion_matcher.match(roi_coarse, desc, s)
+            coarse_scores.append((result.best_score, s, tpl_resized, alpha_resized))
+        else:
+            # Legacy SSD-based coarse scoring (lower = better)
+            ssd_map = _ssd_via_fft(roi_coarse, tpl_coarse, alpha_coarse)
+            min_ssd = float(ssd_map.min())
+            coarse_scores.append((min_ssd, s, tpl_resized, alpha_resized))
 
-    # Keep top-K candidates (or all if fewer than K)
-    coarse_scores.sort(key=lambda x: x[0])
+    # Keep top-K candidates
+    if fusion_matcher is not None:
+        coarse_scores.sort(key=lambda x: x[0], reverse=True)
+    else:
+        coarse_scores.sort(key=lambda x: x[0])
     candidate_scales = coarse_scores[:COARSE_TOP_K]
     t_coarse_elapsed = (time.perf_counter() - t_coarse_start) * 1000
 
@@ -672,6 +684,7 @@ def detect_all_layers(
     scales: list[float] | None = None,
     layer_filter: list[str] | None = None,
     force: bool = False,
+    profile: str | Path | dict | None = None,
 ) -> dict:
     """Run detection for selected layers.
 
@@ -684,6 +697,11 @@ def detect_all_layers(
     """
     context = _prepare_detection(project_name, preview_path, phase, config_path, scales)
     layer_plan = context["layer_plan"]
+
+    # Initialize fusion matcher if a profile is configured
+    pm = PathManager(project_name, config_path=config_path)
+    profile_cfg = _resolve_profile(profile, project_dir=pm.get_output_dir())
+    fusion_matcher = FusionMatcher(profile_cfg) if profile_cfg else None
 
     results = {}
     layers = layer_plan.get("layers", [])
@@ -739,6 +757,7 @@ def detect_all_layers(
             fine_radius=context["fine_radius"],
             opacity=opacity,
             force=force,
+            fusion_matcher=fusion_matcher,
         )
         results[lid] = result
         timing = result.get("timing_ms", 0)
@@ -774,6 +793,9 @@ def main():
     parser.add_argument("--force", action="store_true",
                         help="Force detection on all requested layers, skipping opacity/background/repeat safety checks. "
                              "Use only when the user explicitly requests it.")
+    parser.add_argument("--profile", default=None,
+                        help="Matching profile: preset name (default, structure_heavy, color_heavy, texture_heavy) "
+                             "or path to a JSON profile file. Auto-detects match_profile.json in output dir if omitted.")
     args = parser.parse_args()
 
     # Default output path
@@ -794,6 +816,7 @@ def main():
         config_path=args.config, scales=args.scales,
         layer_filter=args.layer,
         force=args.force,
+        profile=args.profile,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
