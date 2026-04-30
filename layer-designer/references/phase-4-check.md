@@ -76,11 +76,11 @@ python scripts/crop_to_content.py \
 
 ---
 
-## Step 2: Detect Layer Positions (On-Demand — Algorithmic Layout Refinement)
+## Step 2: Detect Layer Positions (On-Demand — Algorithmic Layout Refinement) 【实验性的】
 
 **Script**: `detect_layer_positions.py`
 
-This step is **not run by default**. It is offered to the user in Step 3 when they report that layers look misaligned in the preview.
+This step is **not run by default** and is currently **experimental**. It is offered to the user in Step 3 when they report that layers look misaligned in the preview.
 
 **What it does**:
 1. Reads each layer PNG (post-rembg/crop) as a template
@@ -89,7 +89,7 @@ This step is **not run by default**. It is offered to the user in Step 3 when th
 4. Matches via downsampled SSD + fine refinement
 5. Outputs `04-check/detected_layouts.json`
 
-**【实验性的】Adaptive multi-feature profiles**: The matcher supports profile-based fusion of multiple visual features (RGB SSD, Sobel gradient, Canny edge distance, etc.). The agent inspects the preview, selects a profile (`default`, `structure_heavy`, `color_heavy`, `texture_heavy`), writes `match_profile.json`, and the detection script reads it. See [`references/matching-profiles.md`](references/matching-profiles.md) for the selection guide. Use `--profile <name>` to enable.
+**Adaptive multi-feature profiles** (also experimental): The matcher supports profile-based fusion of multiple visual features (RGB SSD, Sobel gradient, Canny edge distance, etc.). The agent inspects the preview, selects a profile (`default`, `structure_heavy`, `color_heavy`, `texture_heavy`), writes `match_profile.json`, and the detection script reads it. See [`references/matching-profiles.md`](references/matching-profiles.md) for the selection guide. Use `--profile <name>` to enable.
 
 **Limitations** — tell the user before offering:
 - Layers with **high transparency** (opacity < 0.85) are skipped automatically because the preview shows blended colors while the extracted layer is opaque
