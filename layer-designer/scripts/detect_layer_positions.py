@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from path_manager import PathManager
 
 from matchers import FusionMatcher, _resolve_profile
+from matchers.grid_periodicity import detect_grid_periodicity
 from visualize_detect import draw_layout_viz
 
 
@@ -559,11 +560,15 @@ def _prepare_detection(
     pm = PathManager(project_name, config_path=config_path)
     det_cfg = _get_detection_config(config_path)
 
-    # Read layer plan
+    # Read layer plan.  Prefer the expanded plan if it exists (it has the
+    # per-cell instances we need to populate per-instance detected positions
+    # for grid/list parents).  Falls back to the un-expanded plan.
+    expanded_path = pm.get_expanded_layer_plan_path(phase="check")
     layer_plan_path = pm.get_layer_plan_path()
-    if not layer_plan_path.exists():
-        raise FileNotFoundError(f"layer_plan.json not found: {layer_plan_path}")
-    with open(layer_plan_path, "r", encoding="utf-8") as f:
+    chosen_path = expanded_path if expanded_path.exists() else layer_plan_path
+    if not chosen_path.exists():
+        raise FileNotFoundError(f"layer_plan.json not found: {chosen_path}")
+    with open(chosen_path, "r", encoding="utf-8-sig") as f:
         layer_plan = json.load(f)
 
     # Determine canvas size and layer root
@@ -665,6 +670,30 @@ def _resolve_layer(
         "height": int(round(raw_planned.get("height", canvas_h) * layout_scale_y * scale_y)),
     }
 
+    # PL mode: override planned with crop_bbox from layer_meta.json when available.
+    # Rationale: layer_plan.layout for PL layers is the agent's visual estimate (often
+    # very inaccurate). crop_bbox tracks where the AI actually placed the element on
+    # the full early-size canvas (which equals the preview canvas for PL mode), giving
+    # a much better ROI center, base scale, and position-penalty anchor.
+    if layer_info.get("precise_layout", False):
+        layer_root = context["layer_root"]
+        meta_path = layer_root / layer_id / "layer_meta.json"
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r", encoding="utf-8-sig") as f:
+                    meta = json.load(f)
+                bbox = meta.get("crop_bbox")
+                # crop_bbox is (x, y, width, height) — see crop_to_content.py
+                if bbox and len(bbox) == 4:
+                    planned = {
+                        "x": int(bbox[0]),
+                        "y": int(bbox[1]),
+                        "width": int(bbox[2]),
+                        "height": int(bbox[3]),
+                    }
+            except Exception:
+                pass  # fall back to layer_plan layout
+
     # Background layers are not matched (unless forced)
     if not force and layer_info.get("is_background", False):
         return layer_id, None, planned, 1.0, "background"
@@ -707,6 +736,301 @@ def _resolve_layer(
     return layer_id, png_path, planned, opacity, None
 
 
+def _resolve_padding(padding) -> tuple[int, int, int, int]:
+    """Normalise a repeat_config padding spec into (top, right, bottom, left).
+
+    Accepts:
+      - 0 / None / falsy → (0, 0, 0, 0)
+      - int → uniform padding on all sides
+      - dict with any of "top"/"right"/"bottom"/"left" keys (missing → 0)
+    Anything else falls back to (0, 0, 0, 0).
+    """
+    if not padding:
+        return 0, 0, 0, 0
+    if isinstance(padding, (int, float)):
+        v = int(padding)
+        return v, v, v, v
+    if isinstance(padding, dict):
+        return (
+            int(padding.get("top", 0) or 0),
+            int(padding.get("right", 0) or 0),
+            int(padding.get("bottom", 0) or 0),
+            int(padding.get("left", 0) or 0),
+        )
+    return 0, 0, 0, 0
+
+
+def _is_grid_parent(layer_info: dict) -> bool:
+    """A layer drives periodic detection when it's a grid/list parent.
+
+    Two valid shapes:
+
+    - Post-expansion (rough/check): ``repeat_mode in ('grid', 'list')`` and
+      ``is_repeat_parent=True``.  Instances and panels are siblings.
+    - Pre-expansion (raw plan): ``repeat_mode in ('grid', 'list')`` and the
+      layer has a ``repeat_config`` block.  No instances exist yet.
+
+    In either case we exclude entries that are explicitly an instance or
+    panel.
+    """
+    if layer_info.get("is_repeat_instance"):
+        return False
+    if layer_info.get("is_repeat_panel"):
+        return False
+    if layer_info.get("repeat_mode") not in ("grid", "list"):
+        return False
+    if layer_info.get("is_repeat_parent"):
+        return True
+    return bool(layer_info.get("repeat_config"))
+
+
+def _load_grid_template(layer_root: Path, layer_id: str) -> np.ndarray | None:
+    """Load the cropped template PNG (RGBA) for a grid/list parent layer."""
+    layer_dir = layer_root / layer_id
+    if not layer_dir.exists():
+        return None
+    pngs = sorted(layer_dir.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not pngs:
+        return None
+    template_path = None
+    for p in pngs:
+        if p.stem.endswith("_cropped"):
+            template_path = p
+            break
+    if template_path is None:
+        cand = [
+            p for p in pngs
+            if not p.stem.endswith("_raw")
+            and not p.stem.endswith("_stage1")
+            and not p.stem.endswith("_stage2")
+        ]
+        template_path = cand[0] if cand else pngs[0]
+    img = Image.open(str(template_path))
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
+    return np.array(img)
+
+
+def _detect_grid_layer(
+    layer_info: dict,
+    context: dict,
+) -> list[tuple[str, dict]] | None:
+    """Run 1D self-similarity detection on a grid/list parent layer.
+
+    Returns a list of ``(layer_id, result)`` pairs:
+    - First entry is the parent layer with the enclosing bbox plus a
+      ``cells`` list, ``cell_size``, ``gap``, ``rows``, ``cols``.
+    - Following entries are per-cell instance updates whose detected
+      position has been swapped in from the periodic match.
+    """
+    layer_id = layer_info.get("id", "") or layer_info.get("name", "")
+    if not layer_id:
+        return None
+    repeat_mode = layer_info.get("repeat_mode", "grid")
+    repeat_config = layer_info.get("repeat_config") or {}
+
+    layout_scale_x = context["layout_scale_x"] * context["scale_x"]
+    layout_scale_y = context["layout_scale_y"] * context["scale_y"]
+
+    # ROI = area_layout MINUS the planner's padding (when supplied).  The
+    # padding describes the gutter between the auto-panel's outer frame and
+    # the first row/column of cells.  Including the gutter in the ROI lets
+    # the panel's bevel/edge gradients dominate the autocorrelation, which
+    # often produces a wrong period (e.g. a sub-cell harmonic of the panel
+    # decoration).  Stripping the padding constrains detection to the inner
+    # cell tiling area — exactly what we want for periodicity analysis.
+    area = repeat_config.get("area_layout") or layer_info.get("layout", {})
+    pad_top, pad_right, pad_bottom, pad_left = _resolve_padding(
+        repeat_config.get("padding")
+    )
+    inner_x = area.get("x", 0) + pad_left
+    inner_y = area.get("y", 0) + pad_top
+    inner_w = max(0, area.get("width", 0) - pad_left - pad_right)
+    inner_h = max(0, area.get("height", 0) - pad_top - pad_bottom)
+    roi = {
+        "x": int(round(inner_x * layout_scale_x)),
+        "y": int(round(inner_y * layout_scale_y)),
+        "width": int(round(inner_w * layout_scale_x)),
+        "height": int(round(inner_h * layout_scale_y)),
+    }
+    if roi["width"] <= 0 or roi["height"] <= 0:
+        return None
+
+    # Cell size hint: prefer the first instance's layout (post-expansion);
+    # fall back to repeat_config-implied size or the parent layout itself.
+    cell_w_full = 0
+    cell_h_full = 0
+    layers_all = context["layer_plan"].get("layers", [])
+    for child in layers_all:
+        if child.get("is_repeat_instance") and child.get("parent_id") == layer_id:
+            cl = child.get("layout", {})
+            cell_w_full = cl.get("width", 0)
+            cell_h_full = cl.get("height", 0)
+            break
+    if cell_w_full <= 0 or cell_h_full <= 0:
+        # Pre-expansion: parent layout is the cell size
+        pl = layer_info.get("layout", {})
+        cell_w_full = pl.get("width", cell_w_full)
+        cell_h_full = pl.get("height", cell_h_full)
+
+    # Normalise hints across the two repeat_config dialects:
+    #   grid → {cols, rows, gap_x, gap_y}
+    #   list → {direction, count, gap}
+    # Translating list-mode hints to the same {cols, rows, gap_x, gap_y}
+    # shape lets downstream walk-back / count gating treat both modes
+    # uniformly without having to re-parse the original config.
+    cols_hint = int(repeat_config.get("cols", 0) or 0)
+    rows_hint = int(repeat_config.get("rows", 0) or 0)
+    gap_x_hint = repeat_config.get("gap_x", 0) or 0
+    gap_y_hint = repeat_config.get("gap_y", 0) or 0
+    if repeat_mode == "list":
+        direction = str(repeat_config.get("direction", "vertical")).lower()
+        count = int(repeat_config.get("count", 0) or 0)
+        gap = repeat_config.get("gap", 0) or 0
+        if direction == "horizontal":
+            if cols_hint <= 0 and count > 0:
+                cols_hint = count
+            if rows_hint <= 0:
+                rows_hint = 1
+            if not gap_x_hint:
+                gap_x_hint = gap
+        else:
+            if rows_hint <= 0 and count > 0:
+                rows_hint = count
+            if cols_hint <= 0:
+                cols_hint = 1
+            if not gap_y_hint:
+                gap_y_hint = gap
+
+    hints = {
+        "cell_w": int(round(cell_w_full * layout_scale_x)),
+        "cell_h": int(round(cell_h_full * layout_scale_y)),
+        "gap_x": int(round(gap_x_hint * layout_scale_x)),
+        "gap_y": int(round(gap_y_hint * layout_scale_y)),
+        "cols": cols_hint,
+        "rows": rows_hint,
+    }
+
+    # List orientation heuristic.  Priority order:
+    #   1) cols/rows hints (cols>1 → horizontal, rows>1 → vertical)
+    #   2) ROI aspect ratio when both counts are unknown — wide bands list
+    #      horizontally, tall bands list vertically
+    #   3) Cell aspect vs ROI aspect when ratios are ambiguous
+    #   4) Default vertical
+    list_axis = "y"
+    if repeat_mode == "list":
+        if hints["rows"] <= 1 and hints["cols"] > 1:
+            list_axis = "x"
+        elif hints["cols"] <= 1 and hints["rows"] > 1:
+            list_axis = "y"
+        else:
+            roi_aspect = (roi["width"] / max(1, roi["height"]))
+            if roi_aspect >= 1.5:
+                list_axis = "x"
+            elif roi_aspect <= 1.0 / 1.5:
+                list_axis = "y"
+            else:
+                cw = max(1, hints["cell_w"])
+                ch = max(1, hints["cell_h"])
+                # Tall cells inside a roughly-square ROI ⇒ horizontal list.
+                list_axis = "x" if (ch / cw) > 1.0 else "y"
+
+    template_rgba = _load_grid_template(context["layer_root"], layer_id)
+
+    result = detect_grid_periodicity(
+        context["preview_rgb"],
+        roi,
+        mode="grid" if repeat_mode == "grid" else "list",
+        list_axis=list_axis,
+        template_rgba=template_rgba,
+        hints=hints,
+    )
+    if result is None:
+        return None
+
+    # Compute the enclosing bbox for the parent layer entry.
+    if result.cells:
+        xs = [c["x"] for c in result.cells]
+        ys = [c["y"] for c in result.cells]
+        xs2 = [c["x"] + c["width"] for c in result.cells]
+        ys2 = [c["y"] + c["height"] for c in result.cells]
+        bbox = {
+            "x": int(min(xs)),
+            "y": int(min(ys)),
+            "width": int(max(xs2) - min(xs)),
+            "height": int(max(ys2) - min(ys)),
+        }
+    else:
+        bbox = {
+            "x": result.origin_x,
+            "y": result.origin_y,
+            "width": result.cell_w,
+            "height": result.cell_h,
+        }
+
+    parent_planned = roi
+    method_name = f"{result.mode}_periodicity"
+
+    out: list[tuple[str, dict]] = []
+    out.append((layer_id, {
+        "detected": bbox,
+        "planned": parent_planned,
+        "ssd": 0.0,
+        "scale": 1.0,
+        "method": method_name,
+        "cells": result.cells,
+        "cell_size": {"width": result.cell_w, "height": result.cell_h},
+        "gap": {"x": result.gap_x, "y": result.gap_y},
+        "rows": result.rows,
+        "cols": result.cols,
+        "confidence": result.confidence,
+        "timing_ms": result.timing_ms,
+        "per_axis": result.per_axis,
+    }))
+
+    # Map per-instance results: walk the expanded plan and for each
+    # is_repeat_instance child of this parent, look up the matching cell
+    # by (row, col) -> swap in the detected position.
+    for child in layers_all:
+        if not (child.get("is_repeat_instance") and child.get("parent_id") == layer_id):
+            continue
+        row = child.get("cell_row")
+        col = child.get("cell_col")
+        if row is None or col is None:
+            continue
+        match = next(
+            (c for c in result.cells if c.get("row") == row and c.get("col") == col),
+            None,
+        )
+        if match is None:
+            continue
+        cl = child.get("layout", {})
+        child_planned = {
+            "x": int(round(cl.get("x", 0) * layout_scale_x)),
+            "y": int(round(cl.get("y", 0) * layout_scale_y)),
+            "width": int(round(cl.get("width", 0) * layout_scale_x)),
+            "height": int(round(cl.get("height", 0) * layout_scale_y)),
+        }
+        out.append((child.get("id", ""), {
+            "detected": {
+                "x": int(match["x"]),
+                "y": int(match["y"]),
+                "width": int(match["width"]),
+                "height": int(match["height"]),
+            },
+            "planned": child_planned,
+            "ssd": 0.0,
+            "scale": 1.0,
+            "method": f"{method_name}_cell",
+            "row": int(row),
+            "col": int(col),
+            "confidence": result.confidence,
+            "timing_ms": 0.0,
+        }))
+
+    return out
+
+
 def detect_all_layers(
     project_name: str,
     preview_path: str,
@@ -747,6 +1071,56 @@ def detect_all_layers(
 
         # Apply filter if specified
         if filter_set and layer_id.lower() not in filter_set:
+            continue
+
+        # If a previous grid/list parent already emitted this layer (e.g. a
+        # cell instance), keep the periodic-detection result instead of
+        # overwriting it with the generic skip path.
+        if layer_id in results:
+            method = results[layer_id].get("method", "")
+            if method.startswith("grid_periodicity") or method.startswith("list_periodicity"):
+                continue
+
+        # Grid/list parents → 1D self-similarity detection.  This emits
+        # the parent enclosing bbox (with cell metadata) plus per-instance
+        # detected positions in one go.
+        if _is_grid_parent(layer_info):
+            print(f"  [GRID] {layer_id}: running periodicity detection")
+            grid_results = _detect_grid_layer(layer_info, context)
+            if grid_results:
+                for child_id, child_result in grid_results:
+                    if not child_id:
+                        continue
+                    if filter_set and child_id.lower() not in filter_set and child_id != layer_id:
+                        # Still emit per-cell entries even if filter only
+                        # named the parent; users expect them as a unit.
+                        pass
+                    results[child_id] = child_result
+                head = grid_results[0][1]
+                print(f"    → {head['method']}: rows={head['rows']} cols={head['cols']} "
+                      f"cell={head['cell_size']} gap={head['gap']} "
+                      f"conf={head['confidence']:.3f} time={head['timing_ms']:.1f}ms")
+            else:
+                # Detection failed: fall back to planned area_layout.
+                area = layer_info.get("repeat_config", {}).get("area_layout") or layer_info.get("layout", {})
+                lsx = context["layout_scale_x"] * context["scale_x"]
+                lsy = context["layout_scale_y"] * context["scale_y"]
+                planned = {
+                    "x": int(round(area.get("x", 0) * lsx)),
+                    "y": int(round(area.get("y", 0) * lsy)),
+                    "width": int(round(area.get("width", 0) * lsx)),
+                    "height": int(round(area.get("height", 0) * lsy)),
+                }
+                results[layer_id] = {
+                    "detected": planned,
+                    "planned": planned,
+                    "ssd": 0.0,
+                    "scale": 1.0,
+                    "method": "grid_periodicity_fallback",
+                    "reason": "detection_failed",
+                    "timing_ms": 0.0,
+                }
+                print(f"    → grid_periodicity_fallback (detection returned None)")
             continue
 
         resolved = _resolve_layer(layer_info, context, force=force)
@@ -798,7 +1172,11 @@ def detect_all_layers(
             print(f"       coarse={timing_detail.get('coarse_screening', 0)}ms, fine={timing_detail.get('fine_matching', 0)}ms, per_scale={timing_detail.get('per_scale', [])}")
 
     total_time = sum(r.get("timing_ms", 0) for r in results.values())
-    matched_count = sum(1 for r in results.values() if r["method"] == "template_match")
+    matched_count = sum(
+        1 for r in results.values()
+        if r["method"] in ("template_match", "grid_periodicity", "list_periodicity")
+        or r["method"].endswith("_periodicity_cell")
+    )
     print(f"[TOTAL] Detection time: {total_time:.1f}ms ({matched_count}/{len(results)} layer(s) matched)")
 
     return {
@@ -856,7 +1234,11 @@ def main():
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 
-    detected_count = sum(1 for r in result["layers"].values() if r["method"] == "template_match")
+    detected_count = sum(
+        1 for r in result["layers"].values()
+        if r["method"] in ("template_match", "grid_periodicity", "list_periodicity")
+        or r["method"].endswith("_periodicity_cell")
+    )
     total_count = len(result["layers"])
     print("-" * 60)
     print(f"[DONE] {detected_count}/{total_count} layers matched successfully")

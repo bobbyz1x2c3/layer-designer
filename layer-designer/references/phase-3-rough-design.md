@@ -42,15 +42,26 @@ For each layer identified in `layer_plan.json`, in the documented stacking order
    - If `quality_adaptive` enabled: use the layer's assigned tier from `layer_plan.json` (default to `low`)
    - Otherwise: `low`
 3. **Compute per-layer canvas size (MANDATORY — prevents API 502/400 errors)**:
-   - For **non-background layers**: read `layout.width` and `layout.height` from `layer_plan.json`, then call `PathManager.compute_layer_size(layout.width, layout.height)`
-   - This returns a **compliant canvas size matching the layer's aspect ratio**, maximizing area within model constraints
+   - For **non-background layers**:
+     - **Normal mode**: read `layout.width` and `layout.height` from `layer_plan.json`, then call `PathManager.compute_layer_size(layout.width, layout.height)`
+       - This returns a **compliant canvas size matching the layer's aspect ratio**, maximizing area within model constraints
+     - **PL mode** (`precise_layout: true`): use the full canvas `early_size` from `size_plan.json`
+       - The layer is generated on the **full early-size canvas**, giving the model full spatial context
+       - PL mode is **NOT supported** for `grid` / `list` repeat_mode layers — fall back to normal mode
    - For **background layer**: use the full canvas `early_size` from `size_plan.json` (already validated in Phase 1)
    - **NEVER construct a size string manually** (e.g., `f"{w}x{h}"`) without going through `compute_layer_size()` or `validate_size.py` first
 4. Build the layer prompt:
    - Base: `Extract ONLY the {layer_name}. {description}.`
    - **If `opacity` < 1.0 (semi-transparent layer in the full design)**: append color purity guidance:
      > "This element sits on top of a background in the full design. When extracting it, preserve the element's own intrinsic colors and texture cleanly — do NOT blend background colors into the element. The element should retain its intended solid appearance with pure, unmixed colors."
-   - Always append: `Transparent background, PNG with alpha channel, only this element isolated. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fit within the canvas while leaving a small transparent margin of approximately 3-5% on each side. Do NOT let the element touch or overlap the canvas boundary. This margin ensures clean background removal in post-processing.`
+   - **Normal mode** (append always):
+     > `Transparent background, PNG with alpha channel, only this element isolated. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fit within the canvas while leaving a small transparent margin of approximately 3-5% on each side. Do NOT let the element touch or overlap the canvas boundary. This margin ensures clean background removal in post-processing.`
+   - **PL mode** (replaces both the base sentence and the margin instruction above):
+     > `Extract ONLY the {layer_name} from the source reference image. {description}. {style_anchor}. CRITICAL: Preserve the element EXACTLY as it appears in the source reference image — same position, same size, same proportions. Do NOT center the element, do NOT enlarge it, do NOT reposition it. The element should occupy the IDENTICAL pixel region it occupies in the source reference. All other pixels (where the element does not appear in the source) MUST be fully transparent (alpha=0). Output: PNG with alpha channel, same canvas dimensions as the source reference.`
+     >
+     > **Why this wording**: PL mode generates on the full early-size canvas so that the model has full spatial context. Earlier templates that said "natural size" caused the model to enlarge / center the element, producing outputs that filled the canvas — which made `crop_bbox` useless as a fallback. The "EXACTLY as it appears in the source" anchor is what keeps the element at its true position and scale. A/B verified on `back_button`: cropped_size shrank from 1221×354 to 292×95.
+     >
+     > **Important**: Do NOT mention specific pixel coordinates or percentages in the PL mode prompt. The agent's visual estimation of position may be inaccurate, and passing incorrect coordinates to the generation model can mislead it. The phrase "as it appears in the source" lets the model read the position visually.
 
 5. Generate isolated layer:
 

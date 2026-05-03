@@ -217,21 +217,64 @@ def generate_enhanced_plan(
         else:
             scaled_layout = layout
 
-        # Use detected layout only when explicitly applied
+        is_precise_layout = layer_info.get("precise_layout", False)
+
+        # Determine final layout
         final_layout = scaled_layout
-        if apply_detected_layouts and layer_id in detected_layouts:
-            dl = detected_layouts[layer_id]
-            if dl.get("method") == "template_match":
-                detected_layout = dl["detected"]
-                # Warn if detected position deviates significantly from planned
-                dx = detected_layout.get("x", 0) - scaled_layout.get("x", 0)
-                dy = detected_layout.get("y", 0) - scaled_layout.get("y", 0)
-                offset_dist = (dx * dx + dy * dy) ** 0.5
-                avg_size = (scaled_layout.get("width", 1) + scaled_layout.get("height", 1)) / 2
-                if avg_size > 0 and offset_dist / avg_size > warn_offset_threshold:
-                    print(f"  [WARN] {layer_id}: detected position deviates {offset_dist:.0f}px "
-                          f"({offset_dist/avg_size*100:.0f}%) from planned layout")
-                final_layout = detected_layout
+
+        if is_precise_layout:
+            # PL mode priority: detected layout > crop_bbox > scaled_layout (fallback)
+            pl_layout_source = "planned_fallback"
+
+            # 1. Try detected layout (most accurate)
+            if apply_detected_layouts and layer_id in detected_layouts:
+                dl = detected_layouts[layer_id]
+                if dl.get("method") in ("template_match", "template_match_precise"):
+                    final_layout = dl["detected"]
+                    pl_layout_source = "detected"
+            else:
+                # 2. Try crop_bbox from layer_meta.json
+                meta_path = layer_dir / "layer_meta.json"
+                # If in refinement/output phase, fallback to rough_design metadata
+                if not meta_path.exists() and output_phase in ("refinement", "output"):
+                    rough_layer_dir = pm.get_phase_dir("rough_design") / lookup_id
+                    meta_path = rough_layer_dir / "layer_meta.json"
+
+                if meta_path.exists():
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                        bbox = meta.get("crop_bbox")
+                        # crop_bbox is (x, y, width, height) — see crop_to_content.py
+                        if bbox and len(bbox) == 4:
+                            final_layout = {
+                                "x": bbox[0],
+                                "y": bbox[1],
+                                "width": bbox[2],
+                                "height": bbox[3],
+                            }
+                            pl_layout_source = "crop_bbox"
+                    except Exception:
+                        pass  # fallback to scaled_layout
+
+            if pl_layout_source == "planned_fallback":
+                print(f"  [WARN] {layer_id}: PL mode layer has no crop metadata or detected layout. "
+                      f"Falling back to planned layout — position may be inaccurate.")
+        else:
+            # Normal layer: use detected layout only when explicitly applied
+            if apply_detected_layouts and layer_id in detected_layouts:
+                dl = detected_layouts[layer_id]
+                if dl.get("method") == "template_match":
+                    detected_layout = dl["detected"]
+                    # Warn if detected position deviates significantly from planned
+                    dx = detected_layout.get("x", 0) - scaled_layout.get("x", 0)
+                    dy = detected_layout.get("y", 0) - scaled_layout.get("y", 0)
+                    offset_dist = (dx * dx + dy * dy) ** 0.5
+                    avg_size = (scaled_layout.get("width", 1) + scaled_layout.get("height", 1)) / 2
+                    if avg_size > 0 and offset_dist / avg_size > warn_offset_threshold:
+                        print(f"  [WARN] {layer_id}: detected position deviates {offset_dist:.0f}px "
+                              f"({offset_dist/avg_size*100:.0f}%) from planned layout")
+                    final_layout = detected_layout
 
         # Support both 'description' and 'contents' for content field
         content = layer_info.get("description", "") or layer_info.get("contents", "")
@@ -245,6 +288,8 @@ def generate_enhanced_plan(
             "source": rel_path,
             "opacity": layer_info.get("opacity", 1.0),
         }
+        if is_precise_layout:
+            layer_entry["precise_layout"] = True
         # Preserve repeat_mode metadata for preview rendering
         if layer_info.get("is_repeat_parent"):
             layer_entry["is_repeat_parent"] = True

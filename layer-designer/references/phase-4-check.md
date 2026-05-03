@@ -74,13 +74,24 @@ python scripts/crop_to_content.py \
 
 **Auto-padding for large-foreground layers**: When a UI control occupies most of the image (e.g., a full-width banner or large panel), rembg may misclassify the foreground as background. `check_transparency.py` automatically detects this condition (foreground > 70% of pixels) and adds temporary padding before matting, then crops back to the original size. The JSON output includes `"padded": true` when this happens. Use `--pad` to force padding, or `--no-pad` to disable it.
 
+**PL mode layers (`precise_layout: true`)**: PL layers are intentionally generated on the full early-size canvas, so the element legitimately occupies only a small fraction of the image (typical transparent_ratio > 0.85). This would falsely trigger the stage2 padding fallback above. **Always pass `--pl-mode` when running `check_transparency.py` on a PL layer**:
+
+```bash
+python scripts/check_transparency.py --config config.json \
+  --image {pl_layer_path} --remove-bg --auto-crop --crop-padding 4 --pl-mode
+```
+
+`--pl-mode` disables the stage2 padding heuristic for that layer, so the matte runs once and the resulting `cropped_size` reflects the element's true region (which then becomes a valid `crop_bbox` fallback for `generate_preview.py` when template matching fails).
+
 ---
 
-## Step 2: Detect Layer Positions (On-Demand — Algorithmic Layout Refinement) 【实验性的】
+## Step 2: Detect Layer Positions (Algorithmic Layout Refinement)
 
 **Script**: `detect_layer_positions.py`
 
-This step is **not run by default** and is currently **experimental**. It is offered to the user in Step 3 when they report that layers look misaligned in the preview.
+This step performs multi-scale template matching to find the exact position of each layer within the preview image. It is:
+- **Automatically run** for layers with `precise_layout: true` (PL mode)
+- **On-demand** for normal layers (run only when user reports misalignment)
 
 **What it does**:
 1. Reads each layer PNG (post-rembg/crop) as a template
@@ -96,7 +107,36 @@ This step is **not run by default** and is currently **experimental**. It is off
 - Layers with **very few visible pixels** (e.g., a small icon on a large transparent canvas) may not match accurately
 - Independent AI-generated layers can have color differences from the preview, causing imperfect matches
 
-**When to run**: Only after the user confirms they want it. The agent should NOT run this automatically.
+### PL Mode Auto-Detection
+
+If `layer_plan.json` contains layers with `precise_layout: true`, the agent **automatically** runs detection on those layers after Step 1 (transparency check):
+
+```bash
+python scripts/detect_layer_positions.py \
+  --project my-app --config config.json \
+  --preview output/my-app/01-requirements/previews/preview_v2_001.png \
+  --phase rough \
+  --layer submit_btn \
+  --layer search_input
+```
+
+- Only PL layers are specified via `--layer` flags
+- Normal layers are **not** auto-detected (user must explicitly request)
+- PL layers with `repeat_mode` are **skipped** even if marked `precise_layout: true`
+
+After detection, generate the preview with detected layouts applied:
+
+```bash
+python scripts/generate_preview.py \
+  --config config.json \
+  --project my-app \
+  --phase check \
+  --apply-detected-layouts
+```
+
+### Normal Mode On-Demand Detection
+
+For normal (non-PL) layers, this step is **not run by default**. Offer it to the user in Step 3 when they report misalignment.
 
 **Detection Workflow**:
 ```bash

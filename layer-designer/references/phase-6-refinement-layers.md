@@ -55,8 +55,11 @@
 For each layer, **preserving the same stacking order from Phase 3**:
 
 1. **Compute per-layer canvas size (MANDATORY — same compliance rules as Phase 3)**:
-   - For **non-background layers**: read `layout.width` and `layout.height` from `layer_plan.json`, then call `PathManager.compute_layer_size(layout.width, layout.height)`
-   - This returns a **compliant canvas size matching the layer's aspect ratio**, same sizing logic as Phase 3. Both phases use `compute_layer_size(layout.width, layout.height)` with identical inputs, so the canvas dimensions are the same. Only the `quality` tier is higher in Phase 6.
+   - For **non-background layers**:
+     - **Normal layers** (including layers that used PL mode in Phase 3): read `layout.width` and `layout.height` from `layer_plan.json`, then call `PathManager.compute_layer_size(layout.width, layout.height)`
+       - This returns a **compliant canvas size matching the layer's aspect ratio**, same sizing logic as Phase 3. Both phases use `compute_layer_size(layout.width, layout.height)` with identical inputs, so the canvas dimensions are the same. Only the `quality` tier is higher in Phase 6.
+       - **Important**: Even if a layer used PL mode in Phase 3 (full canvas generation), Phase 6 reverts to normal per-layer sizing. The precise layout was already established in Phase 4 via crop bbox or template matching. Phase 6 only needs to produce a high-quality isolated layer; the position is already locked.
+     - **PL mode in Phase 6**: PL mode is **NOT re-applied** in Phase 6. The `precise_layout` flag only affects Phase 3 generation strategy and Phase 4 auto-detection. Phase 6 always uses normal `compute_layer_size()` for non-background layers.
    - For **background layer**: use the full canvas `full_size` from `size_plan.json` (already validated in Phase 1)
    - **NEVER construct a size string manually** without going through `compute_layer_size()` first
    - For **repeat-mode layers** (`repeat_mode: grid/list`): 

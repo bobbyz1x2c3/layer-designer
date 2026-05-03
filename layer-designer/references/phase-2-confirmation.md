@@ -405,6 +405,91 @@ A carrier panel may include any or all of the following visual elements:
 
 ---
 
+## Step 5b: Precise Layout Mode (PL Mode) — Optional
+
+After the layer breakdown is finalized, ask the user whether any layers should use **Precise Layout Mode (PL mode)**.
+
+### What is PL Mode?
+
+PL mode is an **experimental** feature for layers where pixel-accurate positioning is critical.
+
+| | Normal Mode | PL Mode |
+|---|---|---|
+| **Phase 3 canvas size** | `compute_layer_size()` — smallest compliant canvas matching aspect ratio | **`early_size` — full canvas** |
+| **Phase 3 prompt** | "leave 3-5% transparent margin" | **"natural size on full transparent canvas, no extra margins"** |
+| **Phase 4 layout source** | Planned layout × scale_ratio | **Crop bbox or detected layout (more accurate)** |
+| **Phase 4 detect** | On-demand (user request only) | **Automatic for PL layers** |
+| **Cost** | Lower | **Higher** (full canvas per PL layer) |
+
+### When to Recommend PL Mode
+
+Recommend PL mode for layers where **exact position matters**, such as:
+- Small, precisely-placed controls (buttons, input fields, toggles)
+- Icons that must align with grid lines or text baselines
+- Floating action buttons (FAB) with specific corner placement
+- Any layer the user explicitly says "this needs to be pixel-perfect"
+
+### When NOT to Use PL Mode
+
+- **Background layers** — already use full canvas
+- **`grid` / `list` repeat_mode layers** — not yet supported (will be added in future update)
+- **Large containers / panels** — cost is high and position is usually forgiving
+- **Layers with opacity < 0.85** — template matching is unreliable for semitransparent layers
+
+### User Prompt
+
+```
+为了提高某些控件的位置精度，我支持「精确布局模式」（PL 模式）：
+
+📍 PL 模式优势：
+   • 使用全画布生成，模型有更多空间上下文
+   • 自动运行多尺度模板匹配，位置更精确
+   • 适合按钮、输入框、图标等位置敏感的控件
+
+📍 PL 模式代价：
+   • 每个 PL 图层都按全画布尺寸生成（成本更高、更慢）
+   • 暂不支持 grid/list 复用模式
+
+当前图层：
+• submit_btn — 建议启用 PL（位置敏感的小按钮）
+• search_input — 建议启用 PL（输入框需要对齐）
+• sidebar — 不建议（大容器，位置宽容度高）
+• header — 不建议（通栏，位置天然对齐）
+
+是否需要启用 PL 模式？
+• 回复 "全部启用" / "all" → 所有推荐图层启用 PL
+• 回复 "不启用" / "none" → 全部保持普通模式
+• 回复图层名列表 → 只启用指定的图层（如 "submit_btn, search_input"）
+```
+
+### Applying PL Mode
+
+Once the user confirms which layers should use PL mode:
+1. Add `"precise_layout": true` to each selected layer in `layer_plan.json`
+2. Document the choice in the plan presentation below
+
+**Example `layer_plan.json` with PL mode:**
+```json
+{
+  "project": "my-dashboard",
+  "layers": [
+    {
+      "id": "submit_btn",
+      "name": "Submit Button",
+      "precise_layout": true,
+      "layout": {"x": 860, "y": 520, "width": 200, "height": 56}
+    },
+    {
+      "id": "sidebar",
+      "name": "Sidebar",
+      "layout": {"x": 0, "y": 80, "width": 240, "height": 1000}
+    }
+  ]
+}
+```
+
+---
+
 ## Step 6: Present Plan to User
 
 Show the final layer breakdown list:
@@ -413,6 +498,7 @@ Show the final layer breakdown list:
 - Quality tier assignments (if adaptive)
 - Style anchor summary
 - Repeat mode summary (if any)
+- **PL mode summary** (which layers are in PL mode, if any)
 
 **Require explicit "OK"** to proceed to Phase 3.
 
@@ -421,6 +507,7 @@ Show the final layer breakdown list:
 - Request layer adjustments (merge, split, reorder, add, remove)
 - Request return to Phase 1 to redesign the preview
 - Toggle repeat_mode on/off for specific layers
+- Toggle PL mode on/off for specific layers
 
 ---
 

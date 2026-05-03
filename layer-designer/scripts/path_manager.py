@@ -439,6 +439,25 @@ class PathManager:
         ts = timestamp_str or self.timestamp()
         return self.get_layer_dir(layer_name) / f"{self._sanitize_name(layer_name)}_{ts}.png"
 
+    def get_layer_meta_path(self, layer_name: str, phase: str = "rough_design") -> Path:
+        """Get path for layer metadata JSON (e.g., crop bbox info from PL mode).
+
+        Args:
+            layer_name: Layer identifier
+            phase: Which phase the layer belongs to ("rough_design" or "refinement_layers")
+
+        Returns:
+            Path to {layer_name}_meta.json in the layer's directory
+        """
+        if phase in ("rough", "check", "rough_design"):
+            layer_dir = self.get_phase_dir("rough_design") / self._sanitize_name(layer_name)
+        elif phase in ("refinement", "refinement_layers"):
+            layer_dir = self.get_phase_dir("refinement_layers") / self._sanitize_name(layer_name)
+        else:
+            layer_dir = self.get_phase_dir("rough_design") / self._sanitize_name(layer_name)
+        layer_dir.mkdir(parents=True, exist_ok=True)
+        return layer_dir / f"{self._sanitize_name(layer_name)}_meta.json"
+
     # Phase 4: Check
     def get_check_dir(self) -> Path:
         """Get check phase directory."""

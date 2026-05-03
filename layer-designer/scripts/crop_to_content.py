@@ -79,8 +79,12 @@ def crop_to_content(image_path: str, output_path: str, padding: int = 0) -> dict
     right = min(img.width, right + padding)
     bottom = min(img.height, bottom + padding)
 
-    bbox = (int(left), int(top), int(right), int(bottom))
-    cropped = img.crop(bbox)
+    # PIL crop() requires (left, top, right, bottom) — keep this for the actual crop op
+    bbox_xyxy = (int(left), int(top), int(right), int(bottom))
+    cropped = img.crop(bbox_xyxy)
+
+    # Returned bbox is (x, y, width, height) so consumers don't have to subtract corners
+    bbox = (int(left), int(top), int(right - left), int(bottom - top))
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     cropped.save(output_path)
@@ -99,9 +103,24 @@ def main():
     parser.add_argument("--input", "-i", required=True, help="Input PNG image path")
     parser.add_argument("--output", "-o", required=True, help="Output PNG image path")
     parser.add_argument("--padding", "-p", type=int, default=0, help="Padding around content in pixels (default 0)")
+    parser.add_argument("--meta-output", "-m", help="Optional path to write crop metadata JSON (e.g., layer_meta.json)")
     args = parser.parse_args()
 
     result = crop_to_content(args.input, args.output, padding=args.padding)
+
+    # Persist metadata if requested
+    if args.meta_output and result.get("success"):
+        import json
+        meta = {
+            "original_size": result["original_size"],
+            "cropped_size": result["cropped_size"],
+            "crop_bbox": result["bbox"],
+            "padding": args.padding,
+        }
+        Path(args.meta_output).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.meta_output, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+
     print(result)
 
     if result.get("error"):

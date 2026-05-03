@@ -12,6 +12,12 @@ from PIL import Image, ImageDraw, ImageFont
 METHOD_COLORS = {
     "template_match": (0, 255, 0),       # green
     "planned_fallback": (255, 255, 0),   # yellow
+    "grid_periodicity": (0, 200, 255),   # cyan
+    "list_periodicity": (0, 200, 255),   # cyan
+    "grid_periodicity_cell": (0, 200, 255),
+    "list_periodicity_cell": (0, 200, 255),
+    "grid_periodicity_fallback": (255, 200, 0),  # amber
+    "list_periodicity_fallback": (255, 200, 0),
     "skipped_semitransparent": (128, 128, 128),  # gray
     "skipped_background": (128, 128, 128),
     "skipped_repeat": (128, 128, 128),
@@ -20,6 +26,8 @@ METHOD_COLORS = {
 }
 
 PLANNED_COLOR = (255, 0, 0)   # red
+GRID_CELL_COLOR = (0, 200, 255)
+GRID_BORDER_COLOR = (255, 100, 255)  # magenta — enclosing bbox
 
 
 def _get_font(size: int = 12):
@@ -52,13 +60,30 @@ def draw_layout_viz(
 
     filter_set = {f.lower() for f in layer_filter} if layer_filter else None
 
+    # Build a map of parent_id → list of cell-instance entries so we can skip
+    # rendering individual cell entries when the parent already drew all
+    # cells (avoids double-stroking each cell with both detection rects).
+    cell_parents: set[str] = set()
+    for layer_id, result in data["layers"].items():
+        if result.get("method") in ("grid_periodicity", "list_periodicity"):
+            cell_parents.add(layer_id)
+
     for layer_id, result in data["layers"].items():
         if filter_set and layer_id.lower() not in filter_set:
             continue
 
+        method = result.get("method", "unknown")
+
+        # Skip per-cell entries — their parent draws them.  Keep them in
+        # detected_layouts.json so downstream tools can still consume per-cell
+        # detected positions, but the visualisation already covers the cells.
+        if method.endswith("_periodicity_cell"):
+            parent_id = layer_id.rsplit("_cell_", 1)[0]
+            if parent_id in cell_parents:
+                continue
+
         planned = result["planned"]
         detected = result["detected"]
-        method = result.get("method", "unknown")
         score = result.get("ssd", 0.0)
         scale = result.get("scale", 1.0)
         reason = result.get("reason", "")
@@ -72,12 +97,31 @@ def draw_layout_viz(
             width=2,
         )
 
-        # Detected: method-colored
-        draw.rectangle(
-            [detected["x"], detected["y"], detected["x"] + detected["width"], detected["y"] + detected["height"]],
-            outline=color,
-            width=3,
-        )
+        # Grid/list parent: render every detected cell + the enclosing bbox.
+        if method in ("grid_periodicity", "list_periodicity"):
+            # Enclosing bbox in magenta
+            draw.rectangle(
+                [detected["x"], detected["y"], detected["x"] + detected["width"], detected["y"] + detected["height"]],
+                outline=GRID_BORDER_COLOR,
+                width=2,
+            )
+            cells = result.get("cells", []) or []
+            for c in cells:
+                cx, cy, cw, ch = c["x"], c["y"], c["width"], c["height"]
+                draw.rectangle(
+                    [cx, cy, cx + cw, cy + ch],
+                    outline=GRID_CELL_COLOR,
+                    width=2,
+                )
+                tag = f"{c.get('row', 0)},{c.get('col', 0)}"
+                draw.text((cx + 2, cy + 2), tag, fill=GRID_CELL_COLOR, font=small_font)
+        else:
+            # Detected: method-colored
+            draw.rectangle(
+                [detected["x"], detected["y"], detected["x"] + detected["width"], detected["y"] + detected["height"]],
+                outline=color,
+                width=3,
+            )
 
         # Info label above detected box
         label_y = max(0, detected["y"] - 28)
@@ -91,6 +135,15 @@ def draw_layout_viz(
         if method == "template_match":
             info_parts.append(f"ssd={score:.0f}")
             info_parts.append(f"s={scale:.2f}")
+        elif method in ("grid_periodicity", "list_periodicity"):
+            cs = result.get("cell_size", {})
+            gp = result.get("gap", {})
+            info_parts.append(
+                f"{result.get('rows', 0)}x{result.get('cols', 0)}"
+            )
+            info_parts.append(f"cell={cs.get('width', 0)}x{cs.get('height', 0)}")
+            info_parts.append(f"gap=({gp.get('x', 0)},{gp.get('y', 0)})")
+            info_parts.append(f"conf={result.get('confidence', 0.0):.2f}")
         elif method.startswith("skipped"):
             info_parts.append(reason)
         else:
@@ -106,6 +159,7 @@ def draw_layout_viz(
     legend_items = [
         (PLANNED_COLOR, "planned"),
         (METHOD_COLORS["template_match"], "matched"),
+        (METHOD_COLORS["grid_periodicity"], "grid/list"),
         (METHOD_COLORS["planned_fallback"], "fallback"),
         (METHOD_COLORS["skipped_background"], "skipped"),
     ]

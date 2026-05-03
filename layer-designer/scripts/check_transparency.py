@@ -26,6 +26,7 @@ import argparse
 import json
 import random
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from config_loader import load_config, get_transparency_config, get_matting_config
@@ -105,7 +106,7 @@ def _detect_large_foreground(img: Image.Image, stage1_ratio: float = 0.70) -> tu
     return (edge_color, fg_ratio)
 
 
-def remove_background(image_path: str, output_path: str, matting_config: dict | None = None, auto_pad: bool = True) -> dict:
+def remove_background(image_path: str, output_path: str, matting_config: dict | None = None, auto_pad: bool = True, pl_mode: bool = False) -> dict:
     """
     Auto-matte: remove background using rembg (configurable deep-learning model).
 
@@ -118,6 +119,11 @@ def remove_background(image_path: str, output_path: str, matting_config: dict | 
         image_path: Input image path
         output_path: Output RGBA PNG path
         matting_config: Optional matting configuration dict from get_matting_config()
+        auto_pad: Auto-pad large-foreground images before matting (stage2 fallback)
+        pl_mode: PL (precise layout) mode — element legitimately occupies a small
+                 fraction of the full canvas, so high transparency is expected.
+                 Disables the stage2 padding fallback that would otherwise trigger
+                 spuriously when stage1 transparent_ratio > 0.85.
 
     Returns:
         dict with success, transparent_pixels, output_path
@@ -213,7 +219,9 @@ def remove_background(image_path: str, output_path: str, matting_config: dict | 
         method_name += "_alpha_matting"
 
     # --- Stage 2: square padding (long edge +40%) retry if >85% transparent ---
-    if auto_pad and stage1_ratio > 0.85:
+    # Skip stage2 entirely in PL mode — high transparency is expected because the
+    # element legitimately occupies only a small fraction of the full canvas.
+    if auto_pad and not pl_mode and stage1_ratio > 0.85:
         edge_color, _ = _detect_large_foreground(original_img, stage1_ratio)
         result_stage2 = _pad_and_matte_square(original_img, 0.40, edge_color)
         stage2_transparent = _count_transparent(result_stage2)
@@ -383,6 +391,8 @@ def main():
                         help="Force padding mode for large-foreground images before matting")
     parser.add_argument("--no-pad", action="store_true",
                         help="Disable auto-padding for large-foreground images")
+    parser.add_argument("--pl-mode", action="store_true",
+                        help="PL (precise layout) mode: element occupies only a small fraction of the canvas. Disables stage2 padding fallback that would spuriously trigger on legitimate high-transparency outputs.")
     args = parser.parse_args()
 
     # Load config defaults
@@ -428,7 +438,7 @@ def main():
             auto_pad = True
         elif args.no_pad:
             auto_pad = False
-        matte_result = remove_background(args.image, output_path, matting_cfg, auto_pad=auto_pad)
+        matte_result = remove_background(args.image, output_path, matting_cfg, auto_pad=auto_pad, pl_mode=args.pl_mode)
         result["matte"] = matte_result
         # Override has_transparency since we now have a matte output
         if matte_result.get("transparent_pixels", 0) > 0:
@@ -445,6 +455,17 @@ def main():
                 result["crop"] = crop_result
                 if crop_result.get("success"):
                     result["note"] += "; auto-cropped to content bounding box"
+                    # Write crop metadata to layer_meta.json for PL mode support
+                    meta_path = Path(output_path).parent / "layer_meta.json"
+                    meta = {
+                        "original_size": crop_result["original_size"],
+                        "cropped_size": crop_result["cropped_size"],
+                        "crop_bbox": crop_result["bbox"],
+                        "padding": args.crop_padding,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    with open(meta_path, "w", encoding="utf-8") as f:
+                        json.dump(meta, f, indent=2, ensure_ascii=False)
             except Exception as e:
                 result["crop_error"] = str(e)
 
