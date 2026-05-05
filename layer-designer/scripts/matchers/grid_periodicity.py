@@ -595,6 +595,8 @@ def detect_grid_periodicity(
             steps += 1
 
     cells: list[dict] = []
+    rows_hint = int(hints.get("rows", 0))
+    cols_hint = int(hints.get("cols", 0))
     cols = 0
     cx = canvas_origin_x
     while True:
@@ -602,6 +604,10 @@ def detect_grid_periodicity(
         # we don't extrapolate past the planned right/bottom edge because
         # the LLM more often renders fewer cells than planned, not more).
         if cx + cell_w // 2 > rx_end:
+            break
+        # Respect the planner's count hint: don't emit ghost columns/rows
+        # caused by panel borders or decorative elements outside the true grid.
+        if cols_hint > 0 and cols >= cols_hint:
             break
         cols += 1
         cx += period_x
@@ -612,22 +618,14 @@ def detect_grid_periodicity(
     while True:
         if cy + cell_h // 2 > ry_end:
             break
+        if rows_hint > 0 and rows >= rows_hint:
+            break
         rows += 1
         cy += period_y
         if not need_y:
             break
     rows = max(1, rows)
     cols = max(1, cols)
-
-    # If hints provide rows/cols counts, use them as a sanity ceiling: cap at
-    # ``hint+1`` so we tolerate small under-counts from the planner without
-    # emitting many extra ghost rows.
-    rows_hint = int(hints.get("rows", 0))
-    cols_hint = int(hints.get("cols", 0))
-    if rows_hint > 0:
-        rows = min(rows, rows_hint + 1)
-    if cols_hint > 0:
-        cols = min(cols, cols_hint + 1)
 
     for r in range(rows):
         for c in range(cols):

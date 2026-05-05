@@ -105,11 +105,14 @@ Agent 将 `matting.model`（及可选的 `matting.model_file`）写入 `config.j
 
 ### Step 5 — 安装 Python 依赖
 
-Agent 直接执行：
+Agent 直接执行（优先 `requirements.txt`，否则使用内置 fallback 列表 `openai>=2.0 Pillow>=10.0 rembg>=2.0 numpy>=1.24 requests>=2.28`）：
 ```bash
-python -m pip install --upgrade pip
-python -m pip install openai>=2.0 Pillow rembg>=2.0 numpy
+python scripts/setup.py --skip-deps  # 跳过依赖安装（如已在 venv）
+# 或者完整跑：
+python scripts/setup.py
 ```
+
+如果用户使用了托管 Python 环境（macOS 系统 Python、conda base），建议追加 `--skip-pip-upgrade` 避免触发 PEP 668 报错。
 
 安装完成后告知用户。
 
@@ -117,19 +120,41 @@ python -m pip install openai>=2.0 Pillow rembg>=2.0 numpy
 
 ### Step 6 — 下载 ONNX 模型
 
-Agent 调用 `scripts/setup.py` 中对应的下载逻辑（或直接通过 `rembg.session_factory.new_session` 触发下载），并传入 mirror 配置：
+`scripts/setup.py` 现在支持完整的 CLI 参数，Agent 应根据用户在 Step 3 / Step 4 的选择拼装命令：
 
+| 参数 | 作用 | 来源 |
+|------|------|------|
+| `--model <name>` | 选择 matting 模型，覆盖 `config.matting.model` | Step 3 用户选择 |
+| `--use-proxy` | 使用内置 `https://ghproxy.cn` 镜像 | Step 4 中文用户首选 |
+| `--no-proxy` | 即使 `config.json` 里有 mirror 也忽略 | Step 4 用户已科学上网 |
+| `--mirror <URL>` | 自定义镜像前缀 | Step 4 用户提供其他镜像 |
+| `--skip-deps` | 跳过 pip 安装（Step 5 已完成时使用） | 流程优化 |
+| `--no-config-create` | 不要再创建 `config.json`（已在 Step 7 处理） | 避免覆盖 |
+| `--force-redownload` | 强制重新下载已存在的模型 | 模型损坏时 |
+| `--sha256 <HEX>` | 可选 SHA256 校验 | 安全场景 |
+| `--quiet` | 减少日志输出 | 自动化场景 |
+
+`--use-proxy / --no-proxy / --mirror` 三者互斥。
+
+**典型调用**：
 ```bash
-# 若配置了 mirror
-python scripts/setup.py --mirror https://ghproxy.cn
+# 中文用户，BiRefNet 通用版，启用内置镜像
+python scripts/setup.py --model birefnet-general --use-proxy --no-config-create
 
-# 或若 mirror 已写入 config.json，直接运行
+# 已自定义 mirror 写入 config.json，直接读取即可
 python scripts/setup.py
+
+# 已科学上网且 config 里仍残留 mirror
+python scripts/setup.py --no-proxy
+
+# 用户想看完整帮助
+python scripts/setup.py --help
 ```
 
 **注意**：
-- 如果模型已存在，setup.py 会跳过下载。
-- 如果下载失败，Agent 应输出手动下载命令给用户，而不是静默失败。
+- 如果模型已存在，setup.py 会跳过下载（除非 `--force-redownload`）。
+- 下载使用 `.partial` 临时文件 + 原子 rename，部分下载会被自动丢弃；如下载失败，setup.py 会打印手动下载命令而不是静默失败。
+- 如用户已手动下载模型，请在 `config.json` 的 `matting.model_file` 写入实际文件名，setup.py 会用硬链接（失败则 `shutil.copy2`）建立 `<model>.onnx`。
 
 ---
 

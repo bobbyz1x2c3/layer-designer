@@ -106,24 +106,64 @@ class FusionMatcher:
             self.matchers["rgb_ssd"] = RgbSsdMatcher()
             self.weights["rgb_ssd"] = 1.0
 
-    def extract(self, template_rgb: np.ndarray, template_alpha: np.ndarray) -> dict[str, object]:
-        """Extract descriptors from all configured matchers."""
-        return {
-            name: matcher.extract(template_rgb, template_alpha)
-            for name, matcher in self.matchers.items()
-        }
+    def extract(
+        self,
+        template_rgb: np.ndarray,
+        template_alpha: np.ndarray,
+        *,
+        full_res_rgb: np.ndarray | None = None,
+        full_res_alpha: np.ndarray | None = None,
+        downsample_factor: int = 1,
+    ) -> dict[str, object]:
+        """Extract descriptors from all configured matchers.
+
+        Matchers marked with ``supports_full_res = True`` (gradient,
+        edge_canny) receive the full-res inputs and downsample factor so they
+        can preserve high-frequency content.  Other matchers see only the
+        already-downsampled ``template_rgb`` / ``template_alpha``.
+        """
+        out: dict[str, object] = {}
+        for name, matcher in self.matchers.items():
+            if getattr(matcher, "supports_full_res", False) and full_res_rgb is not None:
+                out[name] = matcher.extract(
+                    template_rgb,
+                    template_alpha,
+                    full_res_rgb=full_res_rgb,
+                    full_res_alpha=full_res_alpha,
+                    downsample_factor=downsample_factor,
+                )
+            else:
+                out[name] = matcher.extract(template_rgb, template_alpha)
+        return out
 
     def match(
         self,
         roi_rgb: np.ndarray,
         descriptors: dict[str, object],
         scale: float,
+        *,
+        full_res_roi: np.ndarray | None = None,
+        downsample_factor: int = 1,
     ) -> MatchResult:
-        """Run all matchers, normalize scores, fuse, and return best result."""
+        """Run all matchers, normalize scores, fuse, and return best result.
+
+        SNR-aware matchers (``supports_full_res``) receive ``full_res_roi`` so
+        they can compute their feature on the unblurred ROI and downsample
+        afterwards.
+        """
         results: dict[str, MatchResult] = {}
         for name, matcher in self.matchers.items():
             desc = descriptors[name]
-            results[name] = matcher.match(roi_rgb, desc, scale)
+            if getattr(matcher, "supports_full_res", False) and full_res_roi is not None:
+                results[name] = matcher.match(
+                    roi_rgb,
+                    desc,
+                    scale,
+                    full_res_rgb=full_res_roi,
+                    downsample_factor=downsample_factor,
+                )
+            else:
+                results[name] = matcher.match(roi_rgb, desc, scale)
 
         # Normalize each score map to [0, 1] then weighted sum
         # For single-feature mode, skip normalization so raw scores are comparable across scales

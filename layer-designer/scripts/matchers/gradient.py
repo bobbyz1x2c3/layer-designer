@@ -10,15 +10,48 @@ class GradientMatcher(BaseMatcher):
     """Sobel gradient magnitude + zero-mean normalized cross-correlation (ZNCC).
 
     Color-invariant: relies on edge strength, not absolute pixel colors.
+
+    SNR note: when callers pre-downsample RGB via box-averaging before passing
+    to this matcher, the high-frequency content Sobel relies on is destroyed.
+    To preserve edge SNR, pass `full_res_rgb` (and matching `full_res_alpha`
+    for extract) plus `downsample_factor`. The matcher then computes Sobel on
+    the full-resolution input and box-downsamples the gradient *magnitude*
+    instead of downsampling the RGB and computing Sobel on a blurred surface.
     """
+
+    # Marker for FusionMatcher routing: this matcher accepts the full_res kwargs.
+    supports_full_res = True
 
     def __init__(self):
         super().__init__("gradient")
 
-    def extract(self, template_rgb: np.ndarray, template_alpha: np.ndarray) -> tuple:
-        """Compute Sobel gradient magnitude from template."""
+    def extract(
+        self,
+        template_rgb: np.ndarray,
+        template_alpha: np.ndarray,
+        *,
+        full_res_rgb: np.ndarray | None = None,
+        full_res_alpha: np.ndarray | None = None,
+        downsample_factor: int = 1,
+    ) -> np.ndarray:
+        """Compute Sobel gradient magnitude descriptor.
+
+        Default (no full_res): Sobel on `template_rgb` directly.
+        High-SNR (full_res given): Sobel on full-res, box-downsample magnitude
+        to match `template_rgb`'s spatial dims.
+        """
+        if full_res_rgb is not None and downsample_factor > 1:
+            grad_full = _sobel_magnitude(full_res_rgb)
+            if full_res_alpha is not None:
+                grad_full[full_res_alpha < 0.02] = 0.0
+            grad = _box_downsample_2d(grad_full, downsample_factor)
+            # Crop to descriptor shape so it matches the (already-downsampled)
+            # template_rgb geometry the caller expects.
+            th, tw = template_rgb.shape[:2]
+            grad = grad[:th, :tw]
+            return grad
+
         grad = _sobel_magnitude(template_rgb)
-        # Mask out fully transparent regions
         grad[template_alpha < 0.02] = 0.0
         return grad
 
@@ -27,8 +60,19 @@ class GradientMatcher(BaseMatcher):
         roi_rgb: np.ndarray,
         descriptor: np.ndarray,
         scale: float,
+        *,
+        full_res_rgb: np.ndarray | None = None,
+        downsample_factor: int = 1,
     ) -> MatchResult:
-        roi_grad = _sobel_magnitude(roi_rgb)
+        if full_res_rgb is not None and downsample_factor > 1:
+            roi_grad_full = _sobel_magnitude(full_res_rgb)
+            roi_grad = _box_downsample_2d(roi_grad_full, downsample_factor)
+            # Match descriptor coord system: crop to roi_rgb's downsampled dims.
+            Rh, Rw = roi_rgb.shape[:2]
+            roi_grad = roi_grad[:Rh, :Rw]
+        else:
+            roi_grad = _sobel_magnitude(roi_rgb)
+
         tpl_grad = descriptor
         ncc_map = _zncc_via_fft(roi_grad, tpl_grad)
         # ncc_map is in [-1, 1]; higher = better
@@ -43,13 +87,27 @@ class GradientMatcher(BaseMatcher):
 
 
 def _sobel_magnitude(rgb: np.ndarray) -> np.ndarray:
-    """Compute per-channel Sobel gradient magnitude, then take max across channels."""
+    """Per-channel Sobel gradient magnitude, then max across channels."""
     mag = np.zeros(rgb.shape[:2], dtype=np.float32)
     for c in range(3):
         gx = ndimage.sobel(rgb[:, :, c], axis=1)
         gy = ndimage.sobel(rgb[:, :, c], axis=0)
         mag = np.maximum(mag, np.hypot(gx, gy))
     return mag
+
+
+def _box_downsample_2d(arr: np.ndarray, factor: int) -> np.ndarray:
+    """Box-mean downsample a 2-D array by integer factor.
+
+    Mirrors detect_layer_positions._downsample but for a single channel.
+    """
+    if factor <= 1:
+        return arr
+    h, w = arr.shape[:2]
+    h = (h // factor) * factor
+    w = (w // factor) * factor
+    arr = arr[:h, :w]
+    return arr.reshape(h // factor, factor, w // factor, factor).mean(axis=(1, 3))
 
 
 def _zncc_via_fft(roi: np.ndarray, tpl: np.ndarray) -> np.ndarray:

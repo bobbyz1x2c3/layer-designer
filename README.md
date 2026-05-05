@@ -56,13 +56,53 @@ python scripts/setup.py
 ```
 
 `setup.py` 会自动：
-1. 安装 Python 依赖（`openai`、`Pillow`、`rembg`、`numpy`）
-2. 下载默认 U²Net 模型（约 176MB）
-3. 从模板创建 `config.json`
+1. 安装 Python 依赖（优先 `requirements.txt`，否则 `openai`、`Pillow`、`rembg`、`numpy`、`requests`）
+2. 从 `config.example.json` 复制 `config.json`（用于读取模型选择）
+3. 下载所选 matting 模型（默认 `u2net`，约 176MB；BiRefNet 系列约 300MB~1GB）
+4. 运行导入 + 文件存在性校验
 
-> **中国大陆用户**：若 GitHub 下载超时，可在 `config.json` 中设置 `"download_mirror": "https://ghproxy.cn"`，或运行 `python scripts/setup.py --mirror https://ghproxy.cn`
+#### 常用 CLI 参数
+
+| 参数 | 作用 |
+|------|------|
+| `--model {u2net,birefnet-general,birefnet-general-lite,birefnet-portrait,birefnet-hrsod,birefnet-dis,birefnet-cod,birefnet-massive}` | 指定要下载的 matting 模型，覆盖 `config.matting.model` |
+| `--use-proxy` | 使用内置 `https://ghproxy.cn` 镜像（中国大陆推荐） |
+| `--no-proxy` | 强制忽略 `config.json` 里的镜像设置 |
+| `--mirror <URL>` | 自定义镜像前缀，覆盖 `config.download_mirror` |
+| `--skip-deps` | 跳过 `pip install`（已在虚拟环境里准备好依赖时使用） |
+| `--skip-pip-upgrade` | 不执行 `pip install --upgrade pip`（避免破坏托管环境） |
+| `--no-config-create` | 不要自动从 `config.example.json` 复制 `config.json` |
+| `--force-redownload` | 即使模型已存在也强制重新下载 |
+| `--sha256 <HEX>` | 可选：对下载结果或现有文件做 SHA256 校验 |
+| `--quiet` | 降低日志冗余度（重要警告/错误仍会输出） |
+
+`--use-proxy / --no-proxy / --mirror` 三个互斥，只能选一个。
+
+#### 常用示例
+
+```bash
+# 默认：用 config 里的模型，没有则 u2net
+python scripts/setup.py
+
+# 用 BiRefNet 通用版（边缘质量更高，约 1GB）
+python scripts/setup.py --model birefnet-general
+
+# 中国大陆：内置镜像
+python scripts/setup.py --use-proxy
+
+# 自定义镜像
+python scripts/setup.py --mirror https://my.mirror
+
+# 已有 venv，只想下模型
+python scripts/setup.py --skip-deps --force-redownload
+
+# 完整命令清单
+python scripts/setup.py --help
+```
+
+> **中国大陆用户**：若 GitHub 下载超时，推荐 `--use-proxy`；也可在 `config.json` 中持久化设置 `"download_mirror": "https://ghproxy.cn"`。
 >
-> 也可手动下载模型后放置到 `layer-designer/models/` 目录，并在 `config.json` 的 `matting` 中指定 `"model_file": "你的文件名.onnx"`
+> 也可手动下载模型后放置到 `layer-designer/models/` 目录，并在 `config.json` 的 `matting` 中指定 `"model_file": "你的文件名.onnx"`，setup.py 会自动创建硬链接（跨盘/Windows 无开发者模式时自动降级为 `shutil.copy2`）。
 
 ### ⚠️ 配置（重要）
 

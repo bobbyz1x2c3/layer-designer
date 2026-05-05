@@ -107,6 +107,8 @@ This step performs multi-scale template matching to find the exact position of e
 - Layers with **very few visible pixels** (e.g., a small icon on a large transparent canvas) may not match accurately
 - Independent AI-generated layers can have color differences from the preview, causing imperfect matches
 
+**Background skip safeguard**: `detect_all_layers` skips any layer whose `is_background` is `true` OR whose `id` equals `"background"` before either the grid-parent periodicity branch or per-layer template matching runs. The result is recorded with `method: "skipped_background"` and the log line `[SKIP] {id}: background`. Pass `--force` to override (e.g. when the user insists on aligning a background plate). This guard runs in `detect_all_layers` itself, so a background layer mistakenly tagged as a grid/list parent never enters periodicity detection.
+
 ### PL Mode Auto-Detection
 
 If `layer_plan.json` contains layers with `precise_layout: true`, the agent **automatically** runs detection on those layers after Step 1 (transparency check):
@@ -186,6 +188,29 @@ python scripts/detect_layer_positions.py \
   --layer glass_panel \
   --force
 ```
+
+### Panel Position Refinement (Repeat Mode with `auto_panel`)
+
+When a `grid` or `list` layer has `auto_panel.enabled: true`, the panel layer (e.g., `equipment_panel`) is **automatically template-matched** in Step 2 to refine the container position. This corrects cases where the planned `area_layout` is offset from the actual panel position in the preview.
+
+**What it does:**
+- Runs automatically when the panel has a valid PNG source (post-rembg/crop)
+- If the detected panel position passes validation, all instance cells are shifted to align with it
+- The container `area_layout` and `padding` are updated to match the detected panel boundary
+
+**When it helps:**
+- The planned `area_layout` was visually estimated and is slightly offset from the actual panel
+- The panel has a distinctive texture/shape (template-matches reliably)
+
+**When it is skipped:**
+- Panel PNG does not exist (generation failed or skipped)
+- Panel is semitransparent (opacity < 0.85)
+- Panel has no distinctive visual features (low contrast against background)
+- Detection result is rejected because the panel center deviates too far from the cell group
+
+**Figma plugin behavior:**
+- The panel is positioned relative to the container frame; detected coordinates are used automatically
+- Negative `padding` values (cells extending beyond panel edge) are preserved visually by expanding the auto-layout frame
 
 ---
 

@@ -255,8 +255,19 @@ def _match_scale(roi_rgb: np.ndarray, tpl_rgb: np.ndarray, tpl_alpha: np.ndarray
 
     if fusion_matcher is not None:
         # Fusion-based coarse matching (higher score = better)
-        desc = fusion_matcher.extract(tpl_d, alpha_d)
-        result = fusion_matcher.match(roi_d, desc, scale)
+        # Pass full-res RGB/alpha so SNR-aware matchers (gradient, edge_canny)
+        # compute their feature on the unblurred surface, then downsample the
+        # feature map.  This preserves high-frequency edge content that box-
+        # averaging at the RGB level would otherwise destroy.
+        desc = fusion_matcher.extract(
+            tpl_d, alpha_d,
+            full_res_rgb=tpl_rgb, full_res_alpha=tpl_alpha,
+            downsample_factor=downsample,
+        )
+        result = fusion_matcher.match(
+            roi_d, desc, scale,
+            full_res_roi=roi_rgb, downsample_factor=downsample,
+        )
         score_map = result.score_map
         cy_d, cx_d = np.unravel_index(np.argmax(score_map), score_map.shape)
         # Subpixel refinement on inverted map (turn max → min)
@@ -415,9 +426,18 @@ def detect_layer(
         alpha_resized[alpha_resized < 0.02] = 0.0
 
         if fusion_matcher is not None:
-            # Fusion-based coarse scoring (higher = better)
-            desc = fusion_matcher.extract(tpl_coarse, alpha_coarse)
-            result = fusion_matcher.match(roi_coarse, desc, s)
+            # Fusion-based coarse scoring (higher = better).
+            # Pass the full-resolution resized template + ROI so SNR-aware
+            # matchers (gradient, edge_canny) get high-frequency content.
+            desc = fusion_matcher.extract(
+                tpl_coarse, alpha_coarse,
+                full_res_rgb=tpl_resized, full_res_alpha=alpha_resized,
+                downsample_factor=COARSE_DOWNSAMPLE,
+            )
+            result = fusion_matcher.match(
+                roi_coarse, desc, s,
+                full_res_roi=roi_rgb, downsample_factor=COARSE_DOWNSAMPLE,
+            )
             # DEBUG: print per-feature best position
             if hasattr(fusion_matcher, 'matchers') and len(fusion_matcher.matchers) == 1:
                 feat_name = list(fusion_matcher.matchers.keys())[0]
@@ -698,17 +718,29 @@ def _resolve_layer(
     if not force and layer_info.get("is_background", False):
         return layer_id, None, planned, 1.0, "background"
 
-    # Repeat-related layers are not matched (unless forced)
+    # Repeat-related layers are not matched (unless forced).
+    # Repeat panels are allowed through so their detected bbox can refine
+    # the container position instead of relying solely on the planner.
     repeat_mode = layer_info.get("repeat_mode")
     is_repeat = (
         repeat_mode in ("grid", "list")
         or layer_info.get("is_repeat_instance", False)
         or layer_info.get("is_repeat_parent", False)
-        or layer_info.get("is_repeat_panel", False)
     )
     if not force and is_repeat:
         reason = f"repeat_mode={repeat_mode}" if repeat_mode else "repeat-related"
         return layer_id, None, planned, 1.0, reason
+
+    # Skip repeat panels when no source PNG is available
+    if layer_info.get("is_repeat_panel", False):
+        layer_root = context["layer_root"]
+        layer_dir = layer_root / layer_id
+        has_png = bool(
+            sorted(layer_dir.glob("*_cropped.png"))
+            or sorted(layer_dir.glob("*.png"))
+        )
+        if not has_png:
+            return layer_id, None, planned, 1.0, "repeat-related"
 
     layer_root = context["layer_root"]
     layer_dir = layer_root / layer_id
@@ -840,18 +872,182 @@ def _detect_grid_layer(
     # decoration).  Stripping the padding constrains detection to the inner
     # cell tiling area — exactly what we want for periodicity analysis.
     area = repeat_config.get("area_layout") or layer_info.get("layout", {})
-    pad_top, pad_right, pad_bottom, pad_left = _resolve_padding(
-        repeat_config.get("padding")
+
+    # Auto-derive padding from the auto_panel sibling when the planner left
+    # `repeat_config.padding` empty/zero.  When `auto_panel.enabled=true` is
+    # set but padding is missing, the LLM-rendered panel often doesn't fill
+    # the full area_layout (or its bevel/title bar eats into where the
+    # cells actually sit), and autocorrelation on the unstripped ROI sees
+    # the panel's bevel gradient and locks onto a wrong harmonic.
+    # Reusing the panel sibling's already-detected bbox lets us shrink the
+    # ROI to where the cells truly tile, without an extra template match
+    # in the cheap path.
+    raw_padding = repeat_config.get("padding")
+    padding_is_empty = (
+        not raw_padding
+        or (isinstance(raw_padding, (int, float)) and raw_padding == 0)
+        or (
+            isinstance(raw_padding, dict)
+            and not any(
+                int(raw_padding.get(k, 0) or 0) > 0
+                for k in ("top", "right", "bottom", "left")
+            )
+        )
     )
-    inner_x = area.get("x", 0) + pad_left
-    inner_y = area.get("y", 0) + pad_top
-    inner_w = max(0, area.get("width", 0) - pad_left - pad_right)
-    inner_h = max(0, area.get("height", 0) - pad_top - pad_bottom)
+    auto_panel_cfg = repeat_config.get("auto_panel")
+    if isinstance(auto_panel_cfg, dict):
+        auto_panel_enabled = bool(auto_panel_cfg.get("enabled", True))
+    else:
+        auto_panel_enabled = bool(auto_panel_cfg)
+    derived_padding = None
+    if padding_is_empty and auto_panel_enabled and area:
+        # Resolve panel sibling id: explicit `auto_panel.id` first, fall
+        # back to the `<layer>_panel` naming convention so older plans
+        # without the explicit field still benefit.
+        panel_id = ""
+        if isinstance(auto_panel_cfg, dict):
+            panel_id = (
+                auto_panel_cfg.get("id")
+                or auto_panel_cfg.get("name")
+                or ""
+            )
+        if not panel_id:
+            panel_id = f"{layer_id}_panel"
+
+        # Cheap path: a previous step in the same run already detected the
+        # panel and stuffed the result into context.  We don't currently
+        # populate this from `detect_all_layers`, but plumbing through
+        # `context["detection_results_so_far"]` (or the running `results`)
+        # would let us skip the in-place template match below.
+        panel_bbox_scaled = None
+        prior_results = context.get("detection_results_so_far")
+        if not isinstance(prior_results, dict):
+            prior_results = context.get("results")
+        if isinstance(prior_results, dict):
+            prior = prior_results.get(panel_id)
+            if isinstance(prior, dict):
+                method = prior.get("method", "")
+                bb = prior.get("detected") or {}
+                if (
+                    method == "template_match"
+                    and bb.get("width", 0) > 0
+                    and bb.get("height", 0) > 0
+                ):
+                    panel_bbox_scaled = bb
+
+        # Fallback: template-match the panel sibling in place.  More
+        # expensive than reusing a prior result, but self-contained and
+        # only fires when the planner left padding unspecified.
+        if panel_bbox_scaled is None:
+            panel_layer = next(
+                (
+                    l
+                    for l in context["layer_plan"].get("layers", [])
+                    if (l.get("id") or l.get("name")) == panel_id
+                ),
+                None,
+            )
+            if panel_layer is not None and not panel_layer.get(
+                "is_repeat_instance"
+            ):
+                panel_pl = panel_layer.get("layout") or {}
+                panel_planned = {
+                    "x": int(round(panel_pl.get("x", 0) * layout_scale_x)),
+                    "y": int(round(panel_pl.get("y", 0) * layout_scale_y)),
+                    "width": int(round(panel_pl.get("width", 0) * layout_scale_x)),
+                    "height": int(round(panel_pl.get("height", 0) * layout_scale_y)),
+                }
+                panel_dir = context["layer_root"] / panel_id
+                if panel_dir.exists() and panel_planned["width"] > 0 and panel_planned["height"] > 0:
+                    pngs = (
+                        sorted(panel_dir.glob("*_cropped.png"))
+                        or [
+                            p
+                            for p in sorted(
+                                panel_dir.glob("*.png"),
+                                key=lambda p: p.stat().st_mtime,
+                                reverse=True,
+                            )
+                            if not p.stem.endswith("_raw")
+                            and not p.stem.endswith("_stage1")
+                            and not p.stem.endswith("_stage2")
+                            and not p.stem.endswith("_matte")
+                        ]
+                    )
+                    if pngs:
+                        try:
+                            panel_match = detect_layer(
+                                panel_id,
+                                pngs[0],
+                                context["preview_rgb"],
+                                panel_planned,
+                                context["canvas_w"],
+                                context["canvas_h"],
+                                context["scales"],
+                                roi_factor=context["roi_factor"],
+                                ssd_threshold=context["ssd_threshold"],
+                                downsample=context["downsample"],
+                                fine_radius=context["fine_radius"],
+                                opacity=panel_layer.get("opacity", 1.0),
+                                force=False,
+                                fusion_matcher=None,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            print(
+                                f"  [AUTO-PAD] {layer_id}: in-place panel match failed "
+                                f"({panel_id}): {exc}"
+                            )
+                            panel_match = None
+                        if (
+                            isinstance(panel_match, dict)
+                            and panel_match.get("method") == "template_match"
+                        ):
+                            bb = panel_match.get("detected") or {}
+                            if bb.get("width", 0) > 0 and bb.get("height", 0) > 0:
+                                panel_bbox_scaled = bb
+
+        if panel_bbox_scaled is not None and layout_scale_x and layout_scale_y:
+            # Convert the panel's detected bbox (scaled preview pixels) back
+            # into plan coordinates so we can express insets relative to
+            # area_layout — _resolve_padding's contract.
+            inv_lsx = 1.0 / layout_scale_x
+            inv_lsy = 1.0 / layout_scale_y
+            panel_plan_x = panel_bbox_scaled["x"] * inv_lsx
+            panel_plan_y = panel_bbox_scaled["y"] * inv_lsy
+            panel_plan_x2 = (
+                panel_bbox_scaled["x"] + panel_bbox_scaled["width"]
+            ) * inv_lsx
+            panel_plan_y2 = (
+                panel_bbox_scaled["y"] + panel_bbox_scaled["height"]
+            ) * inv_lsy
+            area_x = area.get("x", 0)
+            area_y = area.get("y", 0)
+            area_x2 = area_x + area.get("width", 0)
+            area_y2 = area_y + area.get("height", 0)
+            candidate = {
+                "top": max(0, int(round(panel_plan_y - area_y))),
+                "left": max(0, int(round(panel_plan_x - area_x))),
+                "right": max(0, int(round(area_x2 - panel_plan_x2))),
+                "bottom": max(0, int(round(area_y2 - panel_plan_y2))),
+            }
+            if any(candidate[k] > 0 for k in candidate):
+                derived_padding = candidate
+                print(
+                    f"  [AUTO-PAD] {layer_id}: derived padding={candidate} "
+                    f"from panel '{panel_id}'"
+                )
+
+    pad_top, pad_right, pad_bottom, pad_left = _resolve_padding(
+        derived_padding if derived_padding is not None else repeat_config.get("padding")
+    )
+    # Use the FULL area_layout as ROI so grid_periodicity can detect the true
+    # distance between cells and the container boundary.  The planner's padding
+    # is passed as a hint instead of being subtracted from the ROI.
     roi = {
-        "x": int(round(inner_x * layout_scale_x)),
-        "y": int(round(inner_y * layout_scale_y)),
-        "width": int(round(inner_w * layout_scale_x)),
-        "height": int(round(inner_h * layout_scale_y)),
+        "x": int(round(area.get("x", 0) * layout_scale_x)),
+        "y": int(round(area.get("y", 0) * layout_scale_y)),
+        "width": int(round(area.get("width", 0) * layout_scale_x)),
+        "height": int(round(area.get("height", 0) * layout_scale_y)),
     }
     if roi["width"] <= 0 or roi["height"] <= 0:
         return None
@@ -948,25 +1144,15 @@ def _detect_grid_layer(
     if result is None:
         return None
 
-    # Compute the enclosing bbox for the parent layer entry.
-    if result.cells:
-        xs = [c["x"] for c in result.cells]
-        ys = [c["y"] for c in result.cells]
-        xs2 = [c["x"] + c["width"] for c in result.cells]
-        ys2 = [c["y"] + c["height"] for c in result.cells]
-        bbox = {
-            "x": int(min(xs)),
-            "y": int(min(ys)),
-            "width": int(max(xs2) - min(xs)),
-            "height": int(max(ys2) - min(ys)),
-        }
-    else:
-        bbox = {
-            "x": result.origin_x,
-            "y": result.origin_y,
-            "width": result.cell_w,
-            "height": result.cell_h,
-        }
+    # Use the FULL ROI as the parent detected area so padding can reflect the
+    # true distance between cells and the container boundary.  Cells may fall
+    # inside the area (positive padding) or spill outside (negative padding).
+    bbox = {
+        "x": roi["x"],
+        "y": roi["y"],
+        "width": roi["width"],
+        "height": roi["height"],
+    }
 
     parent_planned = roi
     method_name = f"{result.mode}_periodicity"
@@ -1081,6 +1267,35 @@ def detect_all_layers(
             if method.startswith("grid_periodicity") or method.startswith("list_periodicity"):
                 continue
 
+        # Background layers are skipped before the grid-parent branch so a
+        # background mistakenly tagged as a grid parent never enters
+        # periodicity detection. Honors --force for manual override.
+        is_background = (
+            layer_info.get("is_background", False) is True
+            or layer_id == "background"
+        )
+        if not force and is_background:
+            lsx = context["layout_scale_x"] * context["scale_x"]
+            lsy = context["layout_scale_y"] * context["scale_y"]
+            layout = layer_info.get("layout", {})
+            planned = {
+                "x": int(round(layout.get("x", 0) * lsx)),
+                "y": int(round(layout.get("y", 0) * lsy)),
+                "width": int(round(layout.get("width", 0) * lsx)),
+                "height": int(round(layout.get("height", 0) * lsy)),
+            }
+            results[layer_id] = {
+                "detected": planned,
+                "planned": planned,
+                "ssd": 0.0,
+                "scale": 1.0,
+                "method": "skipped_background",
+                "reason": "background",
+                "timing_ms": 0.0,
+            }
+            print(f"  [SKIP] {layer_id}: background")
+            continue
+
         # Grid/list parents → 1D self-similarity detection.  This emits
         # the parent enclosing bbox (with cell metadata) plus per-instance
         # detected positions in one go.
@@ -1188,6 +1403,277 @@ def detect_all_layers(
     }
 
 
+def _build_enhanced_layer_plan(
+    layer_plan: dict,
+    detected_result: dict,
+    pm: PathManager,
+) -> dict:
+    """Build an enhanced_layer_plan in preview coordinates from detection results."""
+    dl = detected_result["layers"]
+    canvas_w = detected_result["canvas_size"]["width"]
+    canvas_h = detected_result["canvas_size"]["height"]
+    full_w = layer_plan.get("dimensions", {}).get("width", canvas_w)
+    full_h = layer_plan.get("dimensions", {}).get("height", canvas_h)
+    sx = canvas_w / full_w if full_w else 1.0
+    sy = canvas_h / full_h if full_h else 1.0
+
+    def _sanitize(name: str) -> str:
+        return "".join(c if c.isalnum() or c in "-_" else "_" for c in name).strip("._")
+
+    def _find_source(layer_id: str) -> str:
+        layer_dir = pm.get_layer_dir(layer_id)
+        name = _sanitize(layer_id)
+        # Prefer _cropped.png, fallback to plain .png
+        cropped = sorted(layer_dir.glob(f"{name}_*_cropped.png"))
+        if cropped:
+            return f"../03-rough-design/{name}/{cropped[-1].name}"
+        plain = sorted(layer_dir.glob(f"{name}_*.png"))
+        if plain:
+            return f"../03-rough-design/{name}/{plain[-1].name}"
+        return ""
+
+    def _to_preview_rect(r: dict) -> dict:
+        return {
+            "x": round(r["x"] * sx),
+            "y": round(r["y"] * sy),
+            "width": round(r["width"] * sx),
+            "height": round(r["height"] * sy),
+        }
+
+    enhanced = {
+        "project": layer_plan.get("project", ""),
+        "phase": "check",
+        "dimensions": {"width": canvas_w, "height": canvas_h},
+        "style_anchor": layer_plan.get("style_anchor", ""),
+        "layers": [],
+        "stacking_order": [],
+        "repeat_meta": [],
+    }
+
+    for layer in layer_plan.get("layers", []):
+        layer_id = layer["id"]
+        d = dl.get(layer_id, {})
+
+        new_layer = {
+            "id": layer_id,
+            "name": layer.get("name", layer_id),
+            "content": layer.get("description", layer.get("content", "")),
+            "status": "active",
+            "layout": {},
+            "source": "",
+            "opacity": layer.get("opacity", 1.0),
+        }
+
+        if layer.get("is_background"):
+            # Background fills the preview canvas; it is not part of detection
+            new_layer["layout"] = {"x": 0, "y": 0, "width": canvas_w, "height": canvas_h}
+            new_layer["source"] = _find_source(layer_id)
+            enhanced["layers"].append(new_layer)
+            continue
+
+        if "detected" in d:
+            det = d["detected"]
+            new_layer["layout"] = {
+                "x": det["x"], "y": det["y"],
+                "width": det["width"], "height": det["height"],
+            }
+        else:
+            new_layer["layout"] = _to_preview_rect(layer["layout"])
+
+        if layer.get("repeat_mode"):
+            new_layer["is_repeat_parent"] = True
+            new_layer["repeat_mode"] = layer["repeat_mode"]
+            rc = dict(layer.get("repeat_config", {}))
+
+            if "detected" in d:
+                det = d["detected"]
+                rc["area_layout"] = {
+                    "x": det["x"], "y": det["y"],
+                    "width": det["width"], "height": det["height"],
+                }
+            else:
+                rc["area_layout"] = _to_preview_rect(rc.get("area_layout", layer["layout"]))
+
+            cells = d.get("cells", [])
+            if cells:
+                gap = d.get("gap", {})
+                area = rc["area_layout"]
+                first = cells[0]
+                last = cells[-1]
+                padding = {
+                    "top": first["y"] - area["y"],
+                    "left": first["x"] - area["x"],
+                    "right": (area["x"] + area["width"]) - (last["x"] + last["width"]),
+                    "bottom": (area["y"] + area["height"]) - (last["y"] + last["height"]),
+                }
+                rc["padding"] = padding
+                if layer["repeat_mode"] == "grid":
+                    rc["gap_x"] = gap.get("x", 0)
+                    rc["gap_y"] = gap.get("y", 0)
+                    rc.pop("gap", None)
+                else:
+                    gx = gap.get("x", 0)
+                    gy = gap.get("y", 0)
+                    rc["gap"] = gy if gy > 0 else gx
+
+            new_layer["repeat_config"] = rc
+            auto_panel_cfg = layer.get("repeat_config", {}).get("auto_panel")
+            if auto_panel_cfg is not None:
+                new_layer["repeat_config"]["auto_panel"] = auto_panel_cfg
+
+            enhanced["layers"].append(new_layer)
+
+            if isinstance(auto_panel_cfg, dict) and auto_panel_cfg.get("enabled"):
+                panel_id = auto_panel_cfg["id"]
+                panel_d = dl.get(panel_id, {})
+                if "detected" in panel_d:
+                    pdet = panel_d["detected"]
+                    panel_layout = {
+                        "x": pdet["x"], "y": pdet["y"],
+                        "width": pdet["width"], "height": pdet["height"],
+                    }
+                    # Validate panel bbox against cells before using it for the
+                    # parent container.  Template matching can lock onto the
+                    # panel's inner dark texture rather than the true border,
+                    # producing a bbox that mis-aligns with the cells detected
+                    # by periodicity.  If the panel center deviates from the
+                    # cell-bbox center by more than ~30 % of the panel size,
+                    # we trust the cells (and original area_layout) for the
+                    # container position, but still keep the panel layer at
+                    # its detected position.
+                    use_panel_for_parent = True
+                    if cells:
+                        min_cx = min(c["x"] for c in cells)
+                        min_cy = min(c["y"] for c in cells)
+                        max_cx = max(c["x"] + c["width"] for c in cells)
+                        max_cy = max(c["y"] + c["height"] for c in cells)
+                        cell_cx = (min_cx + max_cx) / 2
+                        cell_cy = (min_cy + max_cy) / 2
+                        panel_cx = pdet["x"] + pdet["width"] / 2
+                        panel_cy = pdet["y"] + pdet["height"] / 2
+                        max_dev = max(pdet["width"], pdet["height"]) * 0.30
+                        if abs(panel_cx - cell_cx) > max_dev or abs(panel_cy - cell_cy) > max_dev:
+                            use_panel_for_parent = False
+                            print(
+                                f"  [WARN] Panel '{panel_id}' center deviates too far from "
+                                f"cells bbox (dx={abs(panel_cx - cell_cx):.0f}, dy={abs(panel_cy - cell_cy):.0f}); "
+                                f"ignoring panel bbox for parent container layout."
+                            )
+                    if use_panel_for_parent:
+                        if cells:
+                            # Shift cells so they align with the detected panel.
+                            # grid_periodicity is run against the planned area_layout;
+                            # when the planned area_layout is offset from the actual
+                            # panel position, the detected cell coordinates inherit
+                            # that offset.  Shifting by the delta between panel and
+                            # area_layout brings cells into the true container.
+                            area = rc.get("area_layout") or _to_preview_rect(layer["layout"])
+                            dx = pdet["x"] - area["x"]
+                            dy = pdet["y"] - area["y"]
+                            for cell in cells:
+                                cell["x"] += dx
+                                cell["y"] += dy
+
+                            # Container size = panel bbox expanded to enclose all
+                            # shifted cells.  This keeps the container tight while
+                            # still ensuring every cell is inside.
+                            min_cx = min(c["x"] for c in cells)
+                            max_cx = max(c["x"] + c["width"] for c in cells)
+                            min_cy = min(c["y"] for c in cells)
+                            max_cy = max(c["y"] + c["height"] for c in cells)
+                            container_layout = {
+                                "x": pdet["x"],
+                                "y": pdet["y"],
+                                "width": max(pdet["width"], max_cx - pdet["x"]),
+                                "height": max(pdet["height"], max_cy - pdet["y"]),
+                            }
+
+                            # Recompute padding with the aligned cells + container
+                            first = cells[0]
+                            last = cells[-1]
+                            area = container_layout
+                            padding = {
+                                "top": first["y"] - area["y"],
+                                "left": first["x"] - area["x"],
+                                "right": (area["x"] + area["width"]) - (last["x"] + last["width"]),
+                                "bottom": (area["y"] + area["height"]) - (last["y"] + last["height"]),
+                            }
+                            rc["padding"] = padding
+                        else:
+                            # No cells detected — trust the panel bbox alone
+                            container_layout = {
+                                "x": pdet["x"],
+                                "y": pdet["y"],
+                                "width": pdet["width"],
+                                "height": pdet["height"],
+                            }
+                        new_layer["layout"] = container_layout
+                        rc["area_layout"] = container_layout
+                else:
+                    panel_layout = dict(new_layer["layout"])
+
+                panel_layer = {
+                    "id": panel_id,
+                    "name": auto_panel_cfg.get("name", panel_id),
+                    "content": "",
+                    "status": "active",
+                    "layout": panel_layout,
+                    "source": _find_source(panel_id),
+                    "opacity": auto_panel_cfg.get("opacity", 0.95),
+                    "is_repeat_panel": True,
+                    "repeat_parent_id": layer_id,
+                }
+                enhanced["layers"].append(panel_layer)
+
+            for cell in cells:
+                cell_id = f"{layer_id}_cell_{cell['row']}_{cell['col']}"
+                cell_layer = {
+                    "id": cell_id,
+                    "name": f"{layer.get('name', layer_id)} ({cell['row']+1},{cell['col']+1})",
+                    "content": "",
+                    "status": "active",
+                    "layout": {
+                        "x": cell["x"], "y": cell["y"],
+                        "width": cell["width"], "height": cell["height"],
+                    },
+                    "source": _find_source(layer_id),
+                    "opacity": 1.0,
+                    "is_repeat_instance": True,
+                    "parent_id": layer_id,
+                    "repeat_mode": layer["repeat_mode"],
+                    "cell_index": cell["row"] * layer.get("repeat_config", {}).get("cols", 1) + cell["col"],
+                    "cell_row": cell["row"],
+                    "cell_col": cell["col"],
+                }
+                enhanced["layers"].append(cell_layer)
+        else:
+            new_layer["source"] = _find_source(layer_id)
+            enhanced["layers"].append(new_layer)
+
+    for layer in enhanced["layers"]:
+        if not layer.get("is_repeat_parent"):
+            enhanced["stacking_order"].append(layer.get("name", layer["id"]))
+
+    for layer in layer_plan.get("layers", []):
+        if layer.get("repeat_mode"):
+            rc = layer.get("repeat_config", {})
+            enhanced["repeat_meta"].append({
+                "parent_id": layer["id"],
+                "parent_name": layer.get("name", layer["id"]),
+                "repeat_mode": layer["repeat_mode"],
+                "repeat_config": rc,
+                "instance_count": len([
+                    l for l in enhanced["layers"]
+                    if l.get("parent_id") == layer["id"]
+                ]),
+                "has_panel": "auto_panel" in layer,
+                "panel_id": layer.get("auto_panel", {}).get("id") if "auto_panel" in layer else None,
+                "panel_name": layer.get("auto_panel", {}).get("name") if "auto_panel" in layer else None,
+            })
+
+    return enhanced
+
+
 def main():
     parser = argparse.ArgumentParser(description="Detect layer positions via template matching")
     parser.add_argument("--project", "-p", required=True)
@@ -1243,6 +1729,20 @@ def main():
     print("-" * 60)
     print(f"[DONE] {detected_count}/{total_count} layers matched successfully")
     print(f"[SAVE] {output_path}")
+
+    # Auto-generate enhanced_layer_plan.json in preview coordinates
+    try:
+        pm = PathManager(args.project, config_path=args.config)
+        layer_plan_path = pm.get_layer_plan_path()
+        with open(layer_plan_path, "r", encoding="utf-8-sig") as f:
+            layer_plan = json.load(f)
+        enhanced = _build_enhanced_layer_plan(layer_plan, result, pm)
+        enhanced_path = output_path.parent / "enhanced_layer_plan.json"
+        with open(enhanced_path, "w", encoding="utf-8") as f:
+            json.dump(enhanced, f, indent=2, ensure_ascii=False)
+        print(f"[SAVE] {enhanced_path}")
+    except Exception as e:
+        print(f"[WARN] Failed to generate enhanced_layer_plan: {e}")
 
     if args.visualize:
         try:

@@ -98,7 +98,7 @@ For `grid`:
 | `cols` | Number of columns | `3` |
 | `rows` | Number of rows | `2` |
 | `area_layout` | **Default panel boundary** `{x, y, width, height}`. Defines the full container area and serves as the panel dimensions by default. When `width/height` are provided, cells are positioned inside this area subject to `padding`, and the panel itself uses these exact dimensions. Only use `auto_panel.layout` if the panel needs to deviate from this boundary. When `width/height` are omitted, falls back to legacy mode where `x/y` is the direct cell start. | `{"x": 200, "y": 150, "width": 620, "height": 420}` |
-| `padding` | Inner padding between panel edge and cells. Can be a single number (all sides) or `{top, right, bottom, left}`. Defaults to `0`. When `0`, `area_layout` is the exact cell area (no panel gap). | `24` or `{"top": 24, "right": 24, "bottom": 24, "left": 24}` |
+| `padding` | Inner padding between panel edge and cells. Can be a single number (all sides) or `{top, right, bottom, left}`. Defaults to `0`. When `0`, `area_layout` is the exact cell area (no panel gap). **Can be negative** when cells visually extend beyond the panel edge (e.g., tabs that overflow the tab bar). Negative values are preserved through detection and handled by the Figma plugin via expanded auto-frame sizing. | `24` or `{"top": -8, "right": 24, "bottom": 24, "left": -8}` |
 | `gap_x` | Horizontal gap between cells (px) | `20` |
 | `gap_y` | Vertical gap between cells (px) | `20` |
 | `auto_panel` | Optional panel background config. Only needed when the panel deviates from `area_layout`. | See below |
@@ -109,7 +109,7 @@ For `list`:
 | `direction` | `horizontal` or `vertical` | `horizontal` |
 | `count` | Number of items | `5` |
 | `area_layout` | **Default panel boundary** `{x, y, width, height}`. Defines the full container area and serves as the panel dimensions by default. When `width/height` are provided, cells are positioned inside this area subject to `padding`, and the panel itself uses these exact dimensions. Only use `auto_panel.layout` if the panel needs to deviate from this boundary. When `width/height` are omitted, falls back to legacy mode where `x/y` is the direct cell start. | `{"x": 100, "y": 300, "width": 500, "height": 80}` |
-| `padding` | Inner padding between panel edge and cells. Can be a single number (all sides) or `{top, right, bottom, left}`. Defaults to `0`. When `0`, `area_layout` is the exact cell area (no panel gap). | `16` or `{"top": 16, "right": 16, "bottom": 16, "left": 16}` |
+| `padding` | Inner padding between panel edge and cells. Can be a single number (all sides) or `{top, right, bottom, left}`. Defaults to `0`. When `0`, `area_layout` is the exact cell area (no panel gap). **Can be negative** when cells visually extend beyond the panel edge (e.g., tabs that overflow the tab bar). Negative values are preserved through detection and handled by the Figma plugin via expanded auto-frame sizing. | `16` or `{"top": 16, "right": -4, "bottom": 16, "left": -4}` |
 | `gap` | Gap between items (px) | `16` |
 | `auto_panel` | Optional panel background config. Only needed when the panel deviates from `area_layout`. | See below |
 
@@ -141,6 +141,12 @@ For `list`:
 | **1. 手动覆盖** | `auto_panel.layout` | 最高优先级，直接覆盖所有计算 |
 | **2. area_layout** | `repeat_config.area_layout.width/height` | `area_layout` 显式定义 panel 边界时，直接使用其 `width/height` |
 | **3. 自动推导** | `cols/rows/gap` 或 `count/direction/gap` | 从 cell 数量和间距推导 panel 大小（向后兼容） |
+
+**Phase 4 自动位置修正**：
+
+在 Phase 4（Web Composition Check）中，如果 panel 已成功生成 PNG，`detect_layer_positions.py` 会自动对 panel 进行模板匹配以修正容器位置。验证通过后，所有 cell 会自动对齐到检测到的 panel 边界，`area_layout` 和 `padding` 也会同步更新。
+
+因此，Phase 2 中 `area_layout` 只需粗略估算 — Phase 4 会自动修正。只有当 panel 视觉上明显偏离 cell 区域（如阴影外扩、装饰性边框超出 cell 区）时，才需要手动配置 `auto_panel.layout`。
 
 **Cells 定位规则：**
 
