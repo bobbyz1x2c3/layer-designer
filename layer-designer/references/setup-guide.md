@@ -118,12 +118,32 @@ python scripts/setup.py
 
 ---
 
-### Step 6 — 下载 ONNX 模型
+### Step 5 — 安装 Python 依赖
 
-`scripts/setup.py` 现在支持完整的 CLI 参数，Agent 应根据用户在 Step 3 / Step 4 的选择拼装命令：
+Agent 直接执行（优先 `requirements.txt`，否则使用内置 fallback 列表 `openai>=2.0 Pillow>=10.0 rembg>=2.0 numpy>=1.24 requests>=2.28`）：
+```bash
+python scripts/setup.py --skip-deps --no-config-create  # 跳过依赖安装和 config（如已在 venv）
+# 或者完整跑：
+python scripts/setup.py
+```
+
+**注意**：默认情况下 `setup.py` **不下载模型**，只安装依赖 + 创建 config。模型下载需要额外加 `--download`。
+
+如果用户使用了托管 Python 环境（macOS 系统 Python、conda base），建议追加 `--skip-pip-upgrade` 避免触发 PEP 668 报错。
+
+安装完成后告知用户。
+
+---
+
+### Step 6 — 下载或链接 ONNX 模型
+
+`scripts/setup.py` 现在支持完整的 CLI 参数，Agent 应根据用户在 Step 3 / Step 4 的选择拼装命令。
+
+**默认行为不下载** — 必须加 `--download` 才会触发下载：
 
 | 参数 | 作用 | 来源 |
 |------|------|------|
+| `--download` | **显式触发模型下载**（默认跳过） | Step 3 用户需要自动下载 |
 | `--model <name>` | 选择 matting 模型，覆盖 `config.matting.model` | Step 3 用户选择 |
 | `--use-proxy` | 使用内置 `https://ghproxy.cn` 镜像 | Step 4 中文用户首选 |
 | `--no-proxy` | 即使 `config.json` 里有 mirror 也忽略 | Step 4 用户已科学上网 |
@@ -136,25 +156,43 @@ python scripts/setup.py
 
 `--use-proxy / --no-proxy / --mirror` 三者互斥。
 
-**典型调用**：
+**典型调用（下载模型）**：
 ```bash
 # 中文用户，BiRefNet 通用版，启用内置镜像
-python scripts/setup.py --model birefnet-general --use-proxy --no-config-create
+python scripts/setup.py --download --model birefnet-general --use-proxy --no-config-create
 
-# 已自定义 mirror 写入 config.json，直接读取即可
-python scripts/setup.py
+# 下载默认模型（从 config 读取，否则 u2net）
+python scripts/setup.py --download
+
+# 已自定义 mirror 写入 config.json，直接下载
+python scripts/setup.py --download
 
 # 已科学上网且 config 里仍残留 mirror
-python scripts/setup.py --no-proxy
+python scripts/setup.py --download --no-proxy
 
 # 用户想看完整帮助
 python scripts/setup.py --help
 ```
 
+**如果用户已手动下载模型** — 使用 `link` 子命令：
+```bash
+# 链接已有模型文件（自动推断模型名）
+python scripts/setup.py link /path/to/u2net.onnx
+
+# 指定目标模型名
+python scripts/setup.py link /path/to/BiRefNet-general-epoch_244.onnx --model birefnet-general
+
+# 覆盖已存在的链接
+python scripts/setup.py link /path/to/model.onnx --model u2net --force
+```
+
+`link` 命令会：
+1. 用硬链接（失败则 `shutil.copy2`）将源文件映射到 `models/{model}.onnx`
+2. 自动更新 `config.json` 的 `matting.model` 和 `matting.model_file`
+
 **注意**：
 - 如果模型已存在，setup.py 会跳过下载（除非 `--force-redownload`）。
 - 下载使用 `.partial` 临时文件 + 原子 rename，部分下载会被自动丢弃；如下载失败，setup.py 会打印手动下载命令而不是静默失败。
-- 如用户已手动下载模型，请在 `config.json` 的 `matting.model_file` 写入实际文件名，setup.py 会用硬链接（失败则 `shutil.copy2`）建立 `<model>.onnx`。
 
 ---
 
@@ -185,7 +223,10 @@ Agent 执行验证：
 > - 镜像下载: {mirror or "未启用"}
 > - API 配置: {已配置 / 未配置（请稍后编辑 config.json）}
 >
-> 你可以随时运行 `python scripts/setup.py` 补充下载模型，或直接修改 `config.json` 调整配置。
+> 后续操作：
+> - 需要下载模型：`python scripts/setup.py --download`（或 `--download --model <name>`）
+> - 已有模型文件：`python scripts/setup.py link /path/to/model.onnx`
+> - 调整配置：直接编辑 `config.json`
 
 ---
 

@@ -7,25 +7,29 @@ Run this once after cloning the repository to:
      otherwise an inline fallback list).
   2. Create config.json from the example template (so we can read the
      desired matting model from it).
-  3. Download the configured matting ONNX model (u2net by default,
-     ~176 MB; or a BiRefNet variant for higher quality).
+  3. (Optional) Download the configured matting ONNX model — requires
+     --download flag. Default is to skip downloading.
   4. Run a quick import + presence sanity check.
 
 Quick examples:
     cd layer-designer
-    python scripts/setup.py                              # default u2net
-    python scripts/setup.py --model birefnet-general     # use BiRefNet general
+    python scripts/setup.py                              # install deps + config only
+    python scripts/setup.py --download                   # also download default model
+    python scripts/setup.py --download --model birefnet-general
     python scripts/setup.py --use-proxy                  # built-in ghproxy.cn mirror
     python scripts/setup.py --mirror https://my.mirror   # custom mirror
-    python scripts/setup.py --no-proxy                   # ignore mirror in config
-    python scripts/setup.py --skip-deps --force-redownload
-    python scripts/setup.py --sha256 <hex>               # opt-in integrity check
+    python scripts/setup.py --skip-deps
+
+    # Link an already-downloaded model file
+    python scripts/setup.py link /path/to/u2net.onnx
+    python scripts/setup.py link /path/to/model.onnx --model birefnet-general
 
 See `python scripts/setup.py --help` for the full option list.
 """
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -316,6 +320,8 @@ def download_model(
         print(f"   Mirror URL (China mainland): {DEFAULT_PROXY}/{official_url}")
         print("\n   Example:")
         print(f'   curl -L -o "{model_path}" "{DEFAULT_PROXY}/{official_url}"')
+        print("\n   Or use the link command:")
+        print(f'   python scripts/setup.py link /path/to/{model_name}.onnx --model {model_name}')
     sys.exit(1)
 
 
@@ -346,7 +352,7 @@ def create_config(*, quiet: bool = False) -> bool:
     return True
 
 
-def verify_installation(model_name: str, *, quiet: bool = False) -> None:
+def verify_installation(model_name: str, *, quiet: bool = False, suggest_download: bool = True) -> None:
     """Run a quick sanity check on imports + model + config presence."""
     _log("\n[VERIFY] Verifying installation...", important=True)
     try:
@@ -365,11 +371,14 @@ def verify_installation(model_name: str, *, quiet: bool = False) -> None:
     if (model_dir / f"{model_name}.onnx").exists():
         _log(f"[OK] Matting model ({model_name}) present", important=True)
     else:
-        _log(
-            f"[WARNING] Matting model ({model_name}) missing - "
-            "re-run setup or check matting.model in config.json",
-            important=True,
+        msg = (
+            f"[WARNING] Matting model ({model_name}) missing"
         )
+        if suggest_download:
+            msg += (
+                " - run with --download to fetch, or use 'link' to use an existing file"
+            )
+        _log(msg, important=True)
 
     config = script_dir.parent / "config.json"
     if config.exists():
@@ -409,7 +418,7 @@ def _resolve_settings(args, script_dir: Path):
             _log(f"[WARNING] Could not load config.json: {e}", important=True)
 
     # Model.
-    if args.model:
+    if getattr(args, "model", None):
         model = args.model
     elif cfg is not None:
         try:
@@ -422,11 +431,11 @@ def _resolve_settings(args, script_dir: Path):
         model = "u2net"
 
     # Mirror.
-    if args.no_proxy:
+    if getattr(args, "no_proxy", False):
         mirror = ""
-    elif args.use_proxy:
+    elif getattr(args, "use_proxy", False):
         mirror = DEFAULT_PROXY
-    elif args.mirror:
+    elif getattr(args, "mirror", None):
         mirror = args.mirror
     elif cfg is not None:
         mirror = cfg.get("download_mirror", "") or ""
@@ -445,22 +454,83 @@ def _resolve_settings(args, script_dir: Path):
     return model, mirror, custom_file
 
 
+def _update_config_matting(script_dir: Path, model: str, model_file: str = "") -> bool:
+    """Update matting.model and optionally matting.model_file in config.json."""
+    config_path = script_dir.parent / "config.json"
+    if not config_path.exists():
+        return False
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+
+        if "matting" not in cfg:
+            cfg["matting"] = {}
+        cfg["matting"]["model"] = model
+        if model_file:
+            cfg["matting"]["model_file"] = model_file
+        else:
+            cfg["matting"].pop("model_file", None)
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        _log(f"[WARNING] Could not update config.json: {e}", important=True)
+        return False
+
+
+def _infer_model_from_filename(filename: str) -> str | None:
+    """Try to infer a supported model name from a filename."""
+    lower = filename.lower()
+    for m in SUPPORTED_MODELS:
+        # Check for model name or common variants in filename
+        patterns = [
+            m.lower(),
+            m.lower().replace("-", "_"),
+            m.lower().replace("-", ""),
+        ]
+        for pat in patterns:
+            if pat in lower:
+                return m
+    return None
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Layered Design Generator setup script.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Examples:\n"
-            "  python scripts/setup.py                              # default model from config (or u2net)\n"
-            "  python scripts/setup.py --model birefnet-general     # use BiRefNet general\n"
-            "  python scripts/setup.py --use-proxy                  # built-in ghproxy.cn mirror\n"
-            "  python scripts/setup.py --mirror https://my.mirror   # custom mirror\n"
-            "  python scripts/setup.py --no-proxy                   # ignore mirror in config\n"
-            "  python scripts/setup.py --skip-deps --force-redownload\n"
-            "  python scripts/setup.py --model birefnet-general --sha256 <hex>\n"
+            "Commands:\n"
+            "  setup                     Run setup (default)\n"
+            "  link <source>             Link an existing model file to models/{model}.onnx\n"
+            "\n"
+            "Setup examples:\n"
+            "  python scripts/setup.py                              # install deps + config only\n"
+            "  python scripts/setup.py --download                   # also download default model\n"
+            "  python scripts/setup.py --download --model birefnet-general\n"
+            "  python scripts/setup.py --use-proxy\n"
+            "  python scripts/setup.py --skip-deps\n"
+            "\n"
+            "Link examples:\n"
+            "  python scripts/setup.py link /path/to/u2net.onnx\n"
+            "  python scripts/setup.py link /path/to/model.onnx --model birefnet-general\n"
+            "  python scripts/setup.py link /path/to/model.onnx --force\n"
         ),
     )
-    parser.add_argument(
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # ── setup subcommand ──────────────────────────────────────────────
+    setup_parser = subparsers.add_parser(
+        "setup",
+        help="Install dependencies, create config, optionally download model",
+    )
+    setup_parser.add_argument(
+        "--download",
+        action="store_true",
+        help="Download the matting model. Without this flag, setup skips downloading.",
+    )
+    setup_parser.add_argument(
         "--model",
         choices=SUPPORTED_MODELS,
         help=(
@@ -469,7 +539,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    proxy_group = parser.add_mutually_exclusive_group()
+    proxy_group = setup_parser.add_mutually_exclusive_group()
     proxy_group.add_argument(
         "--use-proxy",
         action="store_true",
@@ -489,42 +559,71 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Custom download mirror prefix (e.g. https://ghproxy.cn). Overrides config.download_mirror.",
     )
 
-    parser.add_argument(
+    setup_parser.add_argument(
         "--skip-deps",
         action="store_true",
         help="Skip pip install (assume dependencies are already present, e.g. inside a prepared venv).",
     )
-    parser.add_argument(
+    setup_parser.add_argument(
         "--skip-pip-upgrade",
         action="store_true",
         help="Don't run `pip install --upgrade pip` (avoid breaking managed environments).",
     )
-    parser.add_argument(
+    setup_parser.add_argument(
         "--no-config-create",
         action="store_true",
         help="Don't auto-copy config.example.json -> config.json if it's missing.",
     )
-    parser.add_argument(
+    setup_parser.add_argument(
         "--force-redownload",
         action="store_true",
         help="Re-download the model even if it already exists on disk.",
     )
-    parser.add_argument(
+    setup_parser.add_argument(
         "--sha256",
         default="",
         metavar="HEX",
         help="Optional SHA256 hex digest. If provided, downloads (and existing files) are verified against it.",
     )
-    parser.add_argument(
+    setup_parser.add_argument(
         "--quiet",
         action="store_true",
         help="Reduce log verbosity. Important warnings/errors still print.",
     )
+
+    # ── link subcommand ───────────────────────────────────────────────
+    link_parser = subparsers.add_parser(
+        "link",
+        help="Link an existing model .onnx file into models/{model}.onnx",
+    )
+    link_parser.add_argument(
+        "source",
+        help="Path to an existing .onnx model file",
+    )
+    link_parser.add_argument(
+        "--model",
+        choices=SUPPORTED_MODELS,
+        help=(
+            "Target model name (e.g. u2net, birefnet-general). "
+            "If omitted, reads from config.json or infers from filename."
+        ),
+    )
+    link_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite the target file if it already exists.",
+    )
+    link_parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Reduce log verbosity. Important warnings/errors still print.",
+    )
+
     return parser
 
 
-def main() -> None:
-    args = _build_parser().parse_args()
+def _cmd_setup(args) -> None:
+    """Execute the setup subcommand."""
     script_dir = Path(__file__).parent.resolve()
 
     print("=" * 60)
@@ -553,16 +652,124 @@ def main() -> None:
     if mirror:
         _log(f"[INFO] Using download mirror: {mirror}", important=True)
 
-    download_model(
-        model,
-        mirror=mirror,
-        sha256=args.sha256,
-        force=args.force_redownload,
-        custom_model_file=custom_file,
-        quiet=args.quiet,
-    )
+    if args.download:
+        download_model(
+            model,
+            mirror=mirror,
+            sha256=args.sha256,
+            force=args.force_redownload,
+            custom_model_file=custom_file,
+            quiet=args.quiet,
+        )
+    else:
+        _log("\n[SKIP] Skipping model download (--download not set).", important=True)
+        # Still try to link a custom model if configured
+        if custom_file:
+            model_dir = script_dir.parent / "models"
+            model_dir.mkdir(parents=True, exist_ok=True)
+            _try_link_custom_model(model_dir, model, custom_file, quiet=args.quiet)
 
-    verify_installation(model, quiet=args.quiet)
+    verify_installation(model, quiet=args.quiet, suggest_download=not args.download)
+
+
+def _cmd_link(args) -> None:
+    """Execute the link subcommand."""
+    script_dir = Path(__file__).parent.resolve()
+    model_dir = script_dir.parent / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["U2NET_HOME"] = str(model_dir)
+
+    source = Path(args.source).resolve()
+    if not source.exists():
+        print(f"[ERROR] Source file not found: {source}")
+        sys.exit(1)
+
+    if source.suffix.lower() != ".onnx":
+        _log(
+            f"[WARNING] Source file does not have .onnx extension: {source}",
+            important=True,
+        )
+
+    # Resolve model name
+    model = args.model
+    if not model:
+        # Try config
+        config_path = script_dir.parent / "config.json"
+        if config_path.exists():
+            try:
+                from config_loader import load_config  # type: ignore
+                cfg = load_config(config_path)
+                from config_loader import get_matting_config  # type: ignore
+                model = get_matting_config(cfg).get("model", "")
+            except Exception:
+                pass
+        # Try to infer from filename
+        if not model:
+            inferred = _infer_model_from_filename(source.name)
+            if inferred:
+                model = inferred
+                _log(f"[INFO] Inferred model name '{model}' from filename", quiet=args.quiet)
+        # Fallback
+        if not model:
+            model = "u2net"
+            _log(f"[INFO] Could not infer model name, defaulting to '{model}'", important=True)
+
+    target = model_dir / f"{model}.onnx"
+
+    if target.exists() and not args.force:
+        print(f"[ERROR] Target already exists: {target}. Use --force to overwrite.")
+        sys.exit(1)
+
+    if target.exists() and args.force:
+        target.unlink()
+
+    # Link or copy
+    try:
+        os.link(str(source), str(target))
+        _log(f"[OK] Linked {source.name} -> {target.name}", important=True)
+    except OSError as link_err:
+        try:
+            shutil.copy2(str(source), str(target))
+            _log(
+                f"[OK] Copied {source.name} -> {target.name} "
+                f"(hardlink unavailable: {link_err})",
+                important=True,
+            )
+        except Exception as copy_err:
+            print(f"[ERROR] Could not link or copy: link={link_err}; copy={copy_err}")
+            sys.exit(1)
+
+    # Update config
+    if _update_config_matting(script_dir, model, source.name):
+        _log(
+            f"[OK] Updated config.json: matting.model = '{model}', "
+            f"matting.model_file = '{source.name}'",
+            important=True,
+        )
+    else:
+        _log("[INFO] config.json not found or not writable. Manual update:", important=True)
+        _log(
+            f'  "matting": {{"model": "{model}", "model_file": "{source.name}"}}',
+            important=True,
+        )
+
+    _log("\n[DONE] Model linked successfully.", important=True)
+
+
+def main() -> None:
+    raw = sys.argv[1:]
+
+    # Default subcommand: if no subcommand is given, treat as "setup".
+    if not raw or (raw[0] not in ("setup", "link", "-h", "--help")):
+        raw = ["setup"] + raw
+
+    parser = _build_parser()
+    args = parser.parse_args(raw)
+
+    if args.command == "setup":
+        _cmd_setup(args)
+    elif args.command == "link":
+        _cmd_link(args)
 
 
 if __name__ == "__main__":
