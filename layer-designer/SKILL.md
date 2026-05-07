@@ -39,7 +39,6 @@ When the user says **"分离模式"**, **"separate mode"**, provides a reference
    - Save reference image to `01-requirements/references/reference.png`
    - Visually analyze the image → generate `layer_plan.json` with **all non-background layers marked `precise_layout: true`**
    - Step-by-step script calls: `generate_image.py edit` → `check_transparency.py --remove-bg --pl-mode` → `detect_layer_positions.py` → `generate_preview.py --apply-detected-layouts`
-   - For unattended automation, `scripts/separate_mode.py` is available as a one-step wrapper
 4. **Output**: `04-check/enhanced_layer_plan.json` for direct Figma import.
 
 Key differences from standard mode:

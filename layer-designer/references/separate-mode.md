@@ -289,23 +289,6 @@ Send a summary to the user:
 
 ---
 
-## Optional: One-Step Execution
-
-For automation scenarios, `scripts/separate_mode.py` provides a one-command wrapper that executes Steps 2–8 sequentially:
-
-```bash
-python scripts/separate_mode.py \
-  --config config.json \
-  --project my-app \
-  --reference-image path/to/reference.png \
-  --quality low \
-  --parallel
-```
-
-**Warning**: This runs all steps in one process. For long-running workflows (10+ layers), prefer the step-by-step approach above to avoid timeouts and enable per-step retry.
-
----
-
 ## Size Handling Summary
 
 | Parameter | Value |
