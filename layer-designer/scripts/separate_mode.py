@@ -75,43 +75,57 @@ def _get_image_size(image_path: Path) -> tuple[int, int]:
         sys.exit(1)
 
 
-def create_size_plan(pm: PathManager, img_width: int, img_height: int) -> dict:
-    """Create size_plan.json from reference image dimensions.
+def create_size_plan(pm: PathManager, config_path: str, img_width: int, img_height: int) -> dict:
+    """Create size_plan.json by calling validate_size.py --downsize-ratio 1.0.
 
-    In separate mode, full_size = early_size = reference image dimensions.
-    If the image dimensions are non-compliant, they are auto-adjusted.
+    In separate mode, both full_size and early_size equal the reference image
+    dimensions (no downscaling). Use --downsize-ratio 1.0 to achieve this.
     """
     _log(f"\n[SIZE] Reference image: {img_width}x{img_height}")
 
-    # Check compliance
-    is_compliant = PathManager.is_size_compliant(img_width, img_height)
+    cmd = [
+        sys.executable,
+        str(_script_dir / "validate_size.py"),
+        "--config", config_path,
+        "--project", pm.project_name,
+        "--width", str(img_width),
+        "--height", str(img_height),
+        "--downsize-ratio", "1.0",
+    ]
 
-    if is_compliant:
-        full_w, full_h = img_width, img_height
-        _log(f"[OK] Image dimensions are compliant")
-    else:
-        full_w, full_h = PathManager.compute_compliant_size(img_width, img_height)
-        _log(
-            f"[ADJUST] Image dimensions {img_width}x{img_height} are non-compliant. "
-            f"Adjusted to: {full_w}x{full_h}",
-            important=True,
-        )
+    success, output = _run_cmd(cmd, timeout=30)
 
-    # In separate mode: only full_size (no early_size concept)
-    plan = {
-        "timestamp": datetime.now().isoformat(),
-        "user_requested": {"width": img_width, "height": img_height},
-        "full_size": {"width": full_w, "height": full_h},
-        "valid": True,
-        "separate_mode": True,
-    }
+    if not success:
+        _log(f"[WARN] validate_size.py failed: {output}", important=True)
+        _log("[FALLBACK] Creating size_plan manually", important=True)
+        # Fallback: create manually
+        is_compliant = PathManager.is_size_compliant(img_width, img_height)
+        if is_compliant:
+            full_w, full_h = img_width, img_height
+        else:
+            full_w, full_h = PathManager.compute_compliant_size(img_width, img_height)
+        plan = {
+            "timestamp": datetime.now().isoformat(),
+            "user_requested": {"width": img_width, "height": img_height},
+            "full_size": {"width": full_w, "height": full_h},
+            "early_size": {"width": full_w, "height": full_h},
+            "valid": True,
+            "separate_mode": True,
+        }
+        size_plan_path = pm.get_phase_dir("requirements") / "size_plan.json"
+        size_plan_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(size_plan_path, "w", encoding="utf-8") as f:
+            json.dump(plan, f, indent=2, ensure_ascii=False)
+        return plan
 
+    # Read the generated size_plan.json
     size_plan_path = pm.get_phase_dir("requirements") / "size_plan.json"
-    size_plan_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(size_plan_path, "w", encoding="utf-8") as f:
-        json.dump(plan, f, indent=2, ensure_ascii=False)
+    with open(size_plan_path, "r", encoding="utf-8") as f:
+        plan = json.load(f)
 
-    _log(f"[OK] Created size_plan.json: {size_plan_path}")
+    _log(f"[OK] Created size_plan.json via validate_size.py")
+    _log(f"       full_size:  {plan['full_size']['width']}x{plan['full_size']['height']}")
+    _log(f"       early_size: {plan['early_size']['width']}x{plan['early_size']['height']}")
     return plan
 
 
@@ -388,7 +402,7 @@ def main() -> None:
 
     # ── 2. Create size_plan.json ────────────────────────────────────
     img_w, img_h = _get_image_size(reference_path)
-    size_plan = create_size_plan(pm, img_w, img_h)
+    size_plan = create_size_plan(pm, config_path, img_w, img_h)
     canvas_w = size_plan["full_size"]["width"]
     canvas_h = size_plan["full_size"]["height"]
 

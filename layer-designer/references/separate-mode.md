@@ -55,26 +55,22 @@ If dimensions are non-compliant, inform user of adjusted dimensions (see Step 2)
 
 ## Step 2: Create size_plan.json
 
-**No `validate_size.py` call needed** — in separate mode, the reference image IS the canvas.
+**Script**: `validate_size.py --downsize-ratio 1.0`
 
-Create `size_plan.json` directly:
-```python
-from path_manager import PathManager
+Run size validation with **downsize ratio = 1.0** (no downscaling — the reference image IS the canvas):
 
-pm = PathManager(project_name, config_path=config_path)
-size_plan = {
-    "timestamp": datetime.now().isoformat(),
-    "user_requested": {"width": img_width, "height": img_height},
-    "full_size": {"width": compliant_w, "height": compliant_h},
-    "valid": True,
-    "separate_mode": True,
-}
-
-# Save to 01-requirements/size_plan.json
-save_path = pm.get_phase_dir("requirements") / "size_plan.json"
+```bash
+python scripts/validate_size.py \
+  --config config.json \
+  --project {project_name} \
+  --width {img_width} \
+  --height {img_height} \
+  --downsize-ratio 1.0
 ```
 
-**If image is non-compliant**: Use `PathManager.compute_compliant_size(img_width, img_height)` to get adjusted dimensions. Report to user:
+**Why `--downsize-ratio 1.0`**: In separate mode, all layers are generated in PL mode on the full canvas. There is no "early phase" with downscaled previews, so both `full_size` and `early_size` equal the reference image dimensions.
+
+**If image is non-compliant**: `validate_size.py` automatically adjusts to the nearest compliant size and reports it. Inform the user:
 > "参考图尺寸 {img_width}x{img_height} 不合规，已自动调整为 {compliant_w}x{compliant_h}。后续生成将使用调整后尺寸。"
 
 ---
@@ -293,6 +289,7 @@ Send a summary to the user:
 | Parameter | Value |
 |-----------|-------|
 | `full_size` | Compliant reference image dimensions |
+| `early_size` | Same as `full_size` (`--downsize-ratio 1.0`) |
 | Layer canvas size | `full_size` (all PL mode) |
 | Alignment | Both dimensions must be multiples of 16 (auto-adjusted) |
 
