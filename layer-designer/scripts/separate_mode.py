@@ -97,12 +97,11 @@ def create_size_plan(pm: PathManager, img_width: int, img_height: int) -> dict:
             important=True,
         )
 
-    # In separate mode: full_size = early_size (no downscaling)
+    # In separate mode: only full_size (no early_size concept)
     plan = {
         "timestamp": datetime.now().isoformat(),
         "user_requested": {"width": img_width, "height": img_height},
         "full_size": {"width": full_w, "height": full_h},
-        "early_size": {"width": full_w, "height": full_h},
         "valid": True,
         "separate_mode": True,
     }

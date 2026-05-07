@@ -19,7 +19,7 @@
 ├── 01-requirements/
 │   └── references/
 │       └── reference.png          # User's reference image
-│   └── size_plan.json             # full_size = early_size = image dimensions
+│   └── size_plan.json             # full_size = compliant image dimensions (no early_size)
 ├── 02-confirmation/
 │   └── layer_plan.json            # Agent-generated (all layers: precise_layout=true)
 ├── 03-rough-design/               # PL-generated layers (full canvas size)
@@ -66,7 +66,6 @@ size_plan = {
     "timestamp": datetime.now().isoformat(),
     "user_requested": {"width": img_width, "height": img_height},
     "full_size": {"width": compliant_w, "height": compliant_h},
-    "early_size": {"width": compliant_w, "height": compliant_h},
     "valid": True,
     "separate_mode": True,
 }
@@ -293,8 +292,7 @@ Send a summary to the user:
 
 | Parameter | Value |
 |-----------|-------|
-| `full_size` | Reference image dimensions (auto-adjusted if non-compliant) |
-| `early_size` | Same as `full_size` (no downscaling in separate mode) |
+| `full_size` | Compliant reference image dimensions |
 | Layer canvas size | `full_size` (all PL mode) |
 | Alignment | Both dimensions must be multiples of 16 (auto-adjusted) |
 
