@@ -1,111 +1,21 @@
 # Separate Mode（分离模式）
 
-**Goal**: Generate layered UI designs from a user-provided reference image, bypassing the standard Phase 1 preview generation.
+**Goal**: Generate layered UI designs from a user-provided reference image, bypassing Phase 1 preview generation.
 
-**When to read this file**: When the user says **"分离模式"**, **"separate mode"**, provides a reference image/ screenshot and asks to extract layers, or wants to skip preview generation and work directly from an existing design.
+**When to read this file**: Agent MUST read this file when the user says **"分离模式"**, **"separate mode"**, provides a reference image/screenshot, or asks to extract layers from an existing design.
 
----
+**How it differs from standard mode**:
+| | Standard 8-phase | Separate Mode |
+|---|---|---|
+| Input | Text description → AI generates preview | **User provides reference image** |
+| Phase 1 | `validate_size.py` + `generate_image.py generate` | **Skipped** (image dimensions = canvas) |
+| Phase 2 | Agent analyzes AI preview → `layer_plan.json` | **Agent analyzes reference image** → `layer_plan.json` |
+| Phase 3 | Mixed PL + normal mode generation | **All PL mode** generation |
+| Phase 4 | Transparency check + on-demand detection | **Automatic** position detection |
 
-## Trigger Conditions
-
-User input includes any of:
-- "分离模式"
-- "separate mode"
-- "我有现成的设计图"
-- "从这张截图提取图层"
-- "直接分析这张图片"
-- 上传了一张 UI 截图 / 设计稿 / 参考图，并明确要求提取图层
-
----
-
-## Workflow Overview
-
-分离模式与标准 8-phase 流程的关键差异：
-
-| 步骤 | 标准模式 | 分离模式 |
-|------|---------|---------|
-| 输入 | 文字需求 → AI 生成预览 | **用户提供参考图** |
-| Phase 1 | validate_size + generate 预览 | **跳过**（以图片尺寸为准） |
-| Phase 2 | Agent 分析预览 → layer_plan | **Agent 分析参考图 → layer_plan**（全 PL 模式） |
-| Phase 3 | 混合模式生成 | **全 PL 模式**生成（脚本自动化） |
-| Phase 4 | 透明度检查 + 检测（需确认） | **自动**透明度检查 + 位置检测（脚本自动化） |
-| 输出 | enhanced_layer_plan + preview.html | **enhanced_layer_plan.json**（Figma 导入） |
-
----
-
-## Agent Responsibilities
-
-### Step 1: Receive Reference Image
-
-1. Save the user's reference image to `01-requirements/references/reference.png`
-2. Read image dimensions using PIL
-3. Check if dimensions are compliant; if not, inform the user of adjusted dimensions
-
-### Step 2: Visual Analysis → layer_plan.json
-
-Perform the same visual analysis as Phase 2, but with these differences:
-
-**All non-background layers MUST have `precise_layout: true`**:
-```json
-{
-  "name": "sidebar",
-  "contents": "Left navigation bar with icons and labels",
-  "layout": {"x": 0, "y": 80, "width": 240, "height": 1000},
-  "opacity": 0.9,
-  "precise_layout": true
-}
+**Output Path Pattern**:
 ```
-
-**Why all PL mode**: In separate mode, layers are extracted from the reference image at their exact positions. PL mode ensures the element stays at its original position on the full canvas, which is required for accurate template matching against the reference.
-
-**Background layer**: Keep `precise_layout: false` (or omit). Background uses the full canvas by default.
-
-**Quality tier**: Default to `low` for all layers in separate mode. Override per layer only when visually justified.
-
-**Layer plan output**: Save to `02-confirmation/layer_plan.json` via `PathManager.get_layer_plan_path()`.
-
-### Step 3: Run separate_mode.py
-
-Once layer_plan.json is ready, invoke the automation script:
-
-```bash
-python scripts/separate_mode.py \
-  --config config.json \
-  --project my-app \
-  --reference-image 01-requirements/references/reference.png \
-  --quality low
-```
-
-**The script automates**: PL generation → transparency check + rembg → position detection → enhanced_layer_plan.json.
-
-**Optional flags**:
-- `--parallel` — Generate layers in parallel (max 3 workers)
-- `--skip-detection` — Skip position detection (if you already have accurate layouts)
-- `--skip-matting` — Skip rembg matting (if API outputs true alpha)
-
-### Step 4: Review Results
-
-After the script completes:
-1. Check `04-check/detected_layouts.json` for position detection results
-2. Check `04-check/enhanced_layer_plan.json` for the final layout data
-3. Import into Figma for visual review
-4. If positions are off, the user can adjust in Figma or re-run with corrected layouts
-
----
-
-## Size Handling
-
-- **Reference image dimensions** = `full_size` = `early_size`
-- If the image is non-compliant, `separate_mode.py` auto-adjusts to the nearest compliant size and logs a warning
-- All PL layers are generated at the **full canvas size** (reference image dimensions)
-- No downscaling — the reference image IS the canvas
-
----
-
-## Output Structure
-
-```
-output/{project}/
+{output_root}/{project_name}/
 ├── 01-requirements/
 │   └── references/
 │       └── reference.png          # User's reference image
@@ -123,44 +33,293 @@ output/{project}/
 
 ---
 
-## Limitations
+## Step 1: Save Reference Image
 
-- **Template matching quality**: Depends on how well the generated layer matches the reference. Complex textures or AI-introduced variations may cause imperfect matches.
-- **PL mode cost**: Each layer is generated at full canvas size, which is more expensive than normal mode per-layer cropping.
-- **Opacity < 0.85 layers**: Template matching skips these automatically. The planned layout is used as fallback.
-- **Repeat mode**: Supported (grid/list with carrier panels), but the parent layer must be visually distinctive for template matching.
+Save the user's reference image to:
+```
+{output_root}/{project_name}/01-requirements/references/reference.png
+```
+
+Use `PathManager.get_phase_dir("requirements") / "references" / "reference.png"`.
+
+**Read image dimensions** using PIL and report to user:
+```python
+from PIL import Image
+with Image.open(path) as img:
+    width, height = img.size
+```
+
+If dimensions are non-compliant, inform user of adjusted dimensions (see Step 2).
 
 ---
 
-## When to Use Separate Mode
+## Step 2: Create size_plan.json
 
-| Use Case | Recommendation |
-|----------|---------------|
-| User has an existing UI screenshot/design | ✅ Separate mode |
-| User wants to replicate an existing design | ✅ Separate mode |
-| User describes a design from scratch | Standard 8-phase |
-| User wants 3 preview options to choose from | Standard 8-phase |
-| User wants to iterate on generated previews | Standard 8-phase |
+**No `validate_size.py` call needed** — in separate mode, the reference image IS the canvas.
+
+Create `size_plan.json` directly:
+```python
+from path_manager import PathManager
+
+pm = PathManager(project_name, config_path=config_path)
+size_plan = {
+    "timestamp": datetime.now().isoformat(),
+    "user_requested": {"width": img_width, "height": img_height},
+    "full_size": {"width": compliant_w, "height": compliant_h},
+    "early_size": {"width": compliant_w, "height": compliant_h},
+    "valid": True,
+    "separate_mode": True,
+}
+
+# Save to 01-requirements/size_plan.json
+save_path = pm.get_phase_dir("requirements") / "size_plan.json"
+```
+
+**If image is non-compliant**: Use `PathManager.compute_compliant_size(img_width, img_height)` to get adjusted dimensions. Report to user:
+> "参考图尺寸 {img_width}x{img_height} 不合规，已自动调整为 {compliant_w}x{compliant_h}。后续生成将使用调整后尺寸。"
 
 ---
 
-## Common Commands
+## Step 3: Visual Analysis → layer_plan.json
+
+**This is the Agent's core responsibility** — no script exists for this step.
+
+Analyze the reference image visually and produce `layer_plan.json` at:
+```
+{output_root}/{project_name}/02-confirmation/layer_plan.json
+```
+
+### Key differences from standard Phase 2:
+
+**All non-background layers MUST have `precise_layout: true`**:
+```json
+{
+  "name": "sidebar",
+  "contents": "Left navigation bar with icons and labels",
+  "layout": {"x": 0, "y": 80, "width": 240, "height": 1000},
+  "opacity": 0.9,
+  "precise_layout": true,
+  "quality_tier": "low"
+}
+```
+
+**Why all PL mode**: In separate mode, layers are extracted from the reference image at their exact positions. PL mode keeps the element at its original pixel region on the full canvas, which is required for accurate template matching against the reference.
+
+**Background layer**: Keep `precise_layout: false` (or omit). Background uses the full canvas naturally.
+
+**Quality tier**: Default to `low` for all layers. Override per layer only when visually justified (e.g. complex textures → `medium`).
+
+**Repeat mode**: Grid/list detection follows the same rules as standard Phase 2.
+
+---
+
+## Step 4: Generate Layers (PL Mode)
+
+**Script**: `generate_image.py edit` (once per layer)
+
+For each layer in `layer_plan.json`:
+
+### 4.1 Determine size
+
+All layers use **full canvas size** (reference image dimensions):
+```python
+canvas_w = size_plan["full_size"]["width"]
+canvas_h = size_plan["full_size"]["height"]
+size_str = f"{canvas_w}x{canvas_h}"
+```
+
+### 4.2 Build PL mode prompt
+
+**For non-background layers**:
+```
+Extract ONLY the {layer_name} from the source reference image. {description}. {style_anchor}.
+CRITICAL: Preserve the element EXACTLY as it appears in the source reference image —
+same position, same size, same proportions.
+Do NOT center the element, do NOT enlarge it, do NOT reposition it.
+The element should occupy the IDENTICAL pixel region it occupies in the source reference.
+All other pixels (where the element does not appear in the source) MUST be fully transparent (alpha=0).
+Output: PNG with alpha channel, same canvas dimensions as the source reference.
+```
+
+**For background layer**:
+```
+From this UI design, extract ONLY the background layer.
+Include: {description}. Full canvas filled completely.
+NO transparent areas. NO UI elements, NO buttons, NO text, NO icons, NO overlays.
+Only the pure background fill, texture, gradient, or environment. {style_anchor}.
+```
+
+**For semi-transparent layers** (opacity < 1.0):
+Append to the prompt:
+```
+This element sits on top of a background in the full design.
+When extracting it, preserve the element's own intrinsic colors and texture cleanly
+— do NOT blend background colors into the element.
+```
+
+### 4.3 Invoke generation
 
 ```bash
-# Standard separate mode
-python scripts/separate_mode.py \
-  --config config.json --project my-app \
-  --reference-image reference.png
-
-# With parallel generation
-python scripts/separate_mode.py \
-  --config config.json --project my-app \
-  --reference-image reference.png \
-  --parallel --quality medium
-
-# Skip detection (if layouts are already accurate)
-python scripts/separate_mode.py \
-  --config config.json --project my-app \
-  --reference-image reference.png \
-  --skip-detection
+python scripts/generate_image.py edit \
+  --config config.json \
+  --image {reference_image_path} \
+  --prompt "{prompt}" \
+  --output output/{project}/03-rough-design/{layer_name}/{layer_name}_001.png \
+  --size {canvas_w}x{canvas_h} \
+  --quality {tier}
 ```
+
+**Timeout guideline**: PL mode at full canvas size:
+- `low` quality: **200-250 seconds**
+- `medium` quality: **250-300 seconds**
+- `high` quality: **300+ seconds**
+
+**Parallel generation**: If `workflow.parallel_generation` is enabled, generate layers in parallel (max 3 workers).
+
+---
+
+## Step 5: Transparency Check + Rembg Matting
+
+**Script**: `check_transparency.py`
+
+For every non-background layer:
+
+```bash
+python scripts/check_transparency.py \
+  --config config.json \
+  --image output/{project}/03-rough-design/{layer_name}/{layer_name}_001.png \
+  --remove-bg \
+  --output output/{project}/03-rough-design/{layer_name}/{layer_name}_matte.png \
+  --pl-mode
+```
+
+After matting, replace the original with the matte version:
+```bash
+# Rename original → backup
+mv {layer_name}_001.png {layer_name}_001.original.png
+mv {layer_name}_matte.png {layer_name}_001.png
+```
+
+**PL mode flag**: Always pass `--pl-mode` so the stage2 padding heuristic is disabled (PL layers are intentionally sparse on the canvas).
+
+**Timeout**: 120 seconds per layer.
+
+---
+
+## Step 6: Auto-Crop (Optional but Recommended)
+
+**Script**: `crop_to_content.py`
+
+After matting, trim transparent padding:
+
+```bash
+python scripts/crop_to_content.py \
+  --input output/{project}/03-rough-design/{layer_name}/{layer_name}_001.png \
+  --output output/{project}/03-rough-design/{layer_name}/{layer_name}_cropped.png \
+  --padding 4
+```
+
+Then replace the original with the cropped version (for tighter compositing and better template matching).
+
+---
+
+## Step 7: Position Detection
+
+**Script**: `detect_layer_positions.py`
+
+Run template matching to find each layer's exact position in the reference image:
+
+```bash
+python scripts/detect_layer_positions.py \
+  --config config.json \
+  --project {project_name} \
+  --preview output/{project}/01-requirements/references/reference.png \
+  --phase rough
+```
+
+**What it does**:
+- Reads each layer PNG (post-matting/crop) as template
+- Searches the reference image around planned position (±250% margin)
+- Tries multiple scales (0.70×–1.30×)
+- Outputs `04-check/detected_layouts.json`
+
+**Timeout**: 600 seconds (depends on layer count and image size).
+
+**PL mode advantage**: Since layers were generated on the full canvas at original position, the template should match the reference image with high accuracy.
+
+---
+
+## Step 8: Generate Enhanced Layer Plan
+
+**Script**: `generate_preview.py`
+
+```bash
+python scripts/generate_preview.py \
+  --config config.json \
+  --project {project_name} \
+  --phase check \
+  --apply-detected-layouts
+```
+
+This produces `04-check/enhanced_layer_plan.json` with:
+- Layout from `detected_layouts.json` (detected positions)
+- Resource paths pointing to `03-rough-design/{layer}/{layer}_001.png`
+
+---
+
+## Step 9: Notify User
+
+Send a summary to the user:
+
+> **分离模式完成**
+>
+> 📁 输出文件：
+> - `04-check/enhanced_layer_plan.json` — Figma 导入数据
+> - `04-check/detected_layouts.json` — 位置检测结果
+>
+> 当前图层（共 {N} 个）：
+> - background ({w}×{h}) @ (0, 0)
+> - ...
+>
+> **请使用 Figma 插件导入查看布局效果。**
+>
+> 如果布局满意，请选择：
+> - 回复 **OK** → 进入 Phase 5~7 精修阶段（如果需要）
+> - 回复 **EXIT** → 直接交付当前图层
+
+---
+
+## Optional: One-Step Execution
+
+For automation scenarios, `scripts/separate_mode.py` provides a one-command wrapper that executes Steps 2–8 sequentially:
+
+```bash
+python scripts/separate_mode.py \
+  --config config.json \
+  --project my-app \
+  --reference-image path/to/reference.png \
+  --quality low \
+  --parallel
+```
+
+**Warning**: This runs all steps in one process. For long-running workflows (10+ layers), prefer the step-by-step approach above to avoid timeouts and enable per-step retry.
+
+---
+
+## Size Handling Summary
+
+| Parameter | Value |
+|-----------|-------|
+| `full_size` | Reference image dimensions (auto-adjusted if non-compliant) |
+| `early_size` | Same as `full_size` (no downscaling in separate mode) |
+| Layer canvas size | `full_size` (all PL mode) |
+| Alignment | Both dimensions must be multiples of 16 (auto-adjusted) |
+
+---
+
+## Limitations
+
+- **Template matching quality**: Depends on how closely the generated layer matches the reference. AI-introduced variations may cause imperfect matches.
+- **Cost**: Full canvas per layer = higher token/cost than normal mode per-layer cropping.
+- **Opacity < 0.85**: These layers are skipped by detection automatically; planned layout is used as fallback.
+- **Repeat mode**: Supported, but parent layer must be visually distinctive for reliable template matching.
