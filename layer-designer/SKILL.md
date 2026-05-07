@@ -29,6 +29,29 @@ Key interaction points:
 
 ---
 
+## 0.5 Separate Mode（分离模式）
+
+When the user says **"分离模式"**, **"separate mode"**, provides a reference image/screenshot, or asks to extract layers from an existing design:
+
+1. Read [`references/separate-mode.md`](references/separate-mode.md) **before** performing any actions.
+2. This mode **bypasses Phase 1** (preview generation) — the user's reference image replaces the generated preview.
+3. **Agent workflow**:
+   - Save reference image to `01-requirements/references/reference.png`
+   - Visually analyze the image → generate `layer_plan.json` with **all non-background layers marked `precise_layout: true`**
+   - Run `scripts/separate_mode.py` to automate: PL generation → transparency check → position detection → enhanced_layer_plan.json
+4. **Output**: `04-check/enhanced_layer_plan.json` for direct Figma import.
+
+Key differences from standard mode:
+| | Standard 8-phase | Separate Mode |
+|---|---|---|
+| Input | Text description | Reference image |
+| Phase 1 | AI generates preview | **Skipped** |
+| Layer generation | Mixed PL + normal | **All PL mode** |
+| Position detection | On-demand / user-triggered | **Automatic** |
+| Size | validate_size.py required | Image dimensions = canvas |
+
+---
+
 ## 1. Prerequisites
 
 - Python 3.9+
