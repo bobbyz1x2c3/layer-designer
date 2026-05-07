@@ -108,7 +108,30 @@ Analyze the reference image visually and produce `layer_plan.json` at:
 
 ---
 
-## Step 4: Generate Layers (PL Mode)
+## Step 4: Confirm layer_plan with User
+
+**Wait for explicit user confirmation before proceeding.**
+
+Present the generated `layer_plan.json` to the user with a summary:
+
+> **图层方案已生成**
+>
+> 共 {N} 个图层：
+> - background (1920×1080) @ (0, 0) — 背景层
+> - sidebar (240×1000) @ (0, 80) — 左侧导航栏
+> - header (1680×80) @ (240, 0) — 顶部标题栏
+> - buttons (280×60) @ (1520, 960) — 按钮组
+>
+> **请确认图层方案是否正确。**
+> - 回复 **OK** → 开始生成图层
+> - 回复 **修改** → 告诉我需要调整的图层
+> - 告诉我新增/删除/重命名的图层
+
+**Important**: Do NOT proceed to Step 5 until the user explicitly replies **"OK"** or confirms.
+
+---
+
+## Step 5: Generate Layers (PL Mode)
 
 **Script**: `generate_image.py edit` (once per layer)
 
@@ -173,7 +196,7 @@ python scripts/generate_image.py edit \
 
 ---
 
-## Step 5: Transparency Check + Rembg Matting
+## Step 6: Transparency Check + Rembg Matting
 
 **Script**: `check_transparency.py`
 
@@ -201,7 +224,7 @@ mv {layer_name}_matte.png {layer_name}_001.png
 
 ---
 
-## Step 6: Auto-Crop (Optional but Recommended)
+## Step 7: Auto-Crop (Optional but Recommended)
 
 **Script**: `crop_to_content.py`
 
@@ -218,7 +241,7 @@ Then replace the original with the cropped version (for tighter compositing and 
 
 ---
 
-## Step 7: Position Detection
+## Step 8: Position Detection
 
 **Script**: `detect_layer_positions.py`
 
@@ -244,7 +267,7 @@ python scripts/detect_layer_positions.py \
 
 ---
 
-## Step 8: Generate Enhanced Layer Plan
+## Step 9: Generate Enhanced Layer Plan
 
 **Script**: `generate_preview.py`
 
@@ -262,7 +285,7 @@ This produces `04-check/enhanced_layer_plan.json` with:
 
 ---
 
-## Step 9: Notify User
+## Step 10: Notify User
 
 Send a summary to the user:
 
