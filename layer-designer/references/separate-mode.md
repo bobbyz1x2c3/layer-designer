@@ -207,11 +207,19 @@ python scripts/check_transparency.py \
   --config config.json \
   --image output/{project}/03-rough-design/{layer_name}/{layer_name}_001.png \
   --remove-bg \
+  --auto-crop \
+  --crop-padding 4 \
   --output output/{project}/03-rough-design/{layer_name}/{layer_name}_matte.png \
   --pl-mode
 ```
 
-After matting, replace the original with the matte version:
+**Why `--auto-crop --crop-padding 4` is REQUIRED for PL mode**:
+- After rembg, the layer has a transparent background but may still have excess transparent padding
+- `--auto-crop` trims to the content bounding box and writes `crop_bbox` to `layer_meta.json`
+- This `crop_bbox` becomes the **planned layout** for `detect_layer_positions.py`
+- Without it, PL mode layers have no accurate position metadata for template matching
+
+After matting, replace the original with the matte/cropped version:
 ```bash
 # Rename original → backup
 mv {layer_name}_001.png {layer_name}_001.original.png
@@ -224,20 +232,20 @@ mv {layer_name}_matte.png {layer_name}_001.png
 
 ---
 
-## Step 7: Auto-Crop (Optional but Recommended)
+## Step 7: Verify crop_bbox in layer_meta.json
 
-**Script**: `crop_to_content.py`
+After Step 6, verify that `layer_meta.json` exists and contains `crop_bbox`:
 
-After matting, trim transparent padding:
-
-```bash
-python scripts/crop_to_content.py \
-  --input output/{project}/03-rough-design/{layer_name}/{layer_name}_001.png \
-  --output output/{project}/03-rough-design/{layer_name}/{layer_name}_cropped.png \
-  --padding 4
+```json
+{
+  "crop_bbox": [100, 200, 150, 50],
+  "cropped_size": {"width": 150, "height": 50}
+}
 ```
 
-Then replace the original with the cropped version (for tighter compositing and better template matching).
+The `crop_bbox` is `[x, y, width, height]` in the full canvas coordinate system. This is the **fallback layout** used by `detect_layer_positions.py` when no detected layout is available.
+
+If `layer_meta.json` is missing or lacks `crop_bbox`, re-run `check_transparency.py` with `--auto-crop`.
 
 ---
 
