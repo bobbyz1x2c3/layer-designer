@@ -6,7 +6,7 @@
 
 ## How It Works
 
-1. **Agent inspects the preview** (`preview_check_screenshot.png` or `preview.html`)
+1. **Agent inspects the preview** (`preview_check_screenshot.png`)
 2. **Classifies the UI style** into one of the preset profiles below
 3. **Writes `match_profile.json`** to `output/{project}/match_profile.json`
 4. **Detection script reads the profile** and computes only the configured features
@@ -66,7 +66,7 @@ Best for: Photographic elements, ornate patterns, detailed artwork where local t
 
 When the user triggers algorithmic alignment ("尝试算法对齐"), the agent MUST:
 
-1. Open `04-check/preview_check_screenshot.png` or `preview.html`
+1. Open `04-check/preview_check_screenshot.png`
 2. Visually assess the dominant visual characteristics
 3. Choose the profile using this decision tree:
 

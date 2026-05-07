@@ -58,13 +58,14 @@ python scripts/setup.py
 `setup.py` 会自动：
 1. 安装 Python 依赖（优先 `requirements.txt`，否则 `openai`、`Pillow`、`rembg`、`numpy`、`requests`）
 2. 从 `config.example.json` 复制 `config.json`（用于读取模型选择）
-3. 下载所选 matting 模型（默认 `u2net`，约 176MB；BiRefNet 系列约 300MB~1GB）
-4. 运行导入 + 文件存在性校验
+3. 运行导入 + 文件存在性校验
+4. **（可选）**下载所选 matting 模型 — 需显式加 `--download`
 
 #### 常用 CLI 参数
 
 | 参数 | 作用 |
 |------|------|
+| `--download` | **显式触发模型下载**（默认跳过） |
 | `--model {u2net,birefnet-general,birefnet-general-lite,birefnet-portrait,birefnet-hrsod,birefnet-dis,birefnet-cod,birefnet-massive}` | 指定要下载的 matting 模型，覆盖 `config.matting.model` |
 | `--use-proxy` | 使用内置 `https://ghproxy.cn` 镜像（中国大陆推荐） |
 | `--no-proxy` | 强制忽略 `config.json` 里的镜像设置 |
@@ -81,28 +82,48 @@ python scripts/setup.py
 #### 常用示例
 
 ```bash
-# 默认：用 config 里的模型，没有则 u2net
+# 默认：安装依赖 + 创建 config（不下载模型）
 python scripts/setup.py
 
+# 下载默认模型（从 config 读取，否则 u2net）
+python scripts/setup.py --download
+
 # 用 BiRefNet 通用版（边缘质量更高，约 1GB）
-python scripts/setup.py --model birefnet-general
+python scripts/setup.py --download --model birefnet-general
 
 # 中国大陆：内置镜像
-python scripts/setup.py --use-proxy
+python scripts/setup.py --download --use-proxy
 
 # 自定义镜像
-python scripts/setup.py --mirror https://my.mirror
+python scripts/setup.py --download --mirror https://my.mirror
 
 # 已有 venv，只想下模型
-python scripts/setup.py --skip-deps --force-redownload
+python scripts/setup.py --download --skip-deps
 
 # 完整命令清单
 python scripts/setup.py --help
 ```
 
 > **中国大陆用户**：若 GitHub 下载超时，推荐 `--use-proxy`；也可在 `config.json` 中持久化设置 `"download_mirror": "https://ghproxy.cn"`。
->
-> 也可手动下载模型后放置到 `layer-designer/models/` 目录，并在 `config.json` 的 `matting` 中指定 `"model_file": "你的文件名.onnx"`，setup.py 会自动创建硬链接（跨盘/Windows 无开发者模式时自动降级为 `shutil.copy2`）。
+
+#### 链接已有模型
+
+如果已手动下载模型，使用 `link` 子命令：
+
+```bash
+# 链接已有模型文件（自动推断模型名）
+python scripts/setup.py link /path/to/u2net.onnx
+
+# 指定目标模型名
+python scripts/setup.py link /path/to/BiRefNet-general-epoch_244.onnx --model birefnet-general
+
+# 覆盖已存在的链接
+python scripts/setup.py link /path/to/model.onnx --model u2net --force
+```
+
+`link` 命令会：
+1. 用硬链接（失败则 `shutil.copy2`）将源文件映射到 `models/{model}.onnx`
+2. 自动更新 `config.json` 的 `matting.model` 和 `matting.model_file`
 
 ### ⚠️ 配置（重要）
 
@@ -141,19 +162,9 @@ Phase 7  最终交付     →  交付资源 + 网页预览 + 清单文件
 Phase 8  状态变体     →  hover / active / disabled 等状态（可选，默认不执行）
 ```
 
-### Phase 4 交互式校验
+### Phase 4 图层检查
 
-不生成静态合成图，而是生成：
-- `enhanced_layer_plan.json` — 布局数据 + 资源路径
-- `preview.html` — 通用静态预览页面
-
-用浏览器打开 `preview.html` 即可：
-- **拖拽** 图层调整位置
-- **缩放** 8 方向手柄调整大小
-- **编辑** 名称、内容、状态、布局数值
-- **导出** 更新后的 `enhanced_layer_plan.json`
-
-用户确认布局无误后再进入精修阶段。
+生成 `enhanced_layer_plan.json` — 布局数据 + 资源路径，用于 Figma 插件导入查看和校验图层位置。
 
 ---
 
@@ -172,7 +183,7 @@ layer-designer/
 │
 ├── scripts/                     # 核心脚本
 ├── templates/
-│   └── preview.html             # 通用静态交互式预览页面
+│   └── enhanced_layer_plan.json  # layout 数据（Figma 导入）
 │
 ├── references/                  # 阶段参考文档
 │   ├── workflow-overview.md     # 工作流全貌速查

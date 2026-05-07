@@ -20,7 +20,12 @@ Key interaction points:
 - Ask about API configuration (provider, base_url, api_key, model)
 - Ask which matting model to use (`u2net`, `birefnet-general`, etc.) with size/quality trade-offs
 - If the user communicates in Chinese, explicitly ask whether to use a download mirror (e.g. `https://github.tbedu.top`)
-- Install dependencies and download models according to user choices
+- Install dependencies; **model download is skipped by default** — use `--download` to fetch, or `link` to use an existing file
+
+**Note on setup.py behavior:**
+- `python scripts/setup.py` — installs deps + creates config, **does NOT download models**
+- `python scripts/setup.py --download` — also downloads the configured model
+- `python scripts/setup.py link /path/to/model.onnx --model u2net` — links an existing model file
 
 ---
 
@@ -115,16 +120,16 @@ On invalid sizes: present violations + suggested nearest compliant size, ask use
 │ Layer breakdown + layout + style anchor + opacity judgment   │
 ├─────────────────────────────────────────────────────────────┤
 │                    PHASE 3: ROUGH DESIGN                     │
-│    Generate isolated layers (early_size) + HTML preview      │
+│           Generate isolated layers (early_size)              │
 ├─────────────────────────────────────────────────────────────┤
-│                    PHASE 4: WEB COMPOSITION CHECK            │
-│    Transparency check + web preview + screenshot check       │
+│                    PHASE 4: COMPOSITION CHECK                │
+│       Transparency check + layer alignment + review          │
 ├─────────────────────────────────────────────────────────────┤
 │                    PHASE 5: REFINEMENT                       │
 │              Preview refinement (full_size)                  │
 ├─────────────────────────────────────────────────────────────┤
 │                    PHASE 6: LAYER REFINEMENT                 │
-│    Final high-quality layers (full_size) + HTML preview      │
+│          Final high-quality layers (full_size)               │
 ├─────────────────────────────────────────────────────────────┤
 │                    PHASE 7: OUTPUT                           │
 │             Deliver final assets + ask variants              │
@@ -145,19 +150,18 @@ On invalid sizes: present violations + suggested nearest compliant size, ask use
 ├── 03-rough-design/
 │   └── {layer_name}/            (one folder per layer)
 ├── 04-check/
-│   ├── enhanced_layer_plan.json (layout + resource paths for preview)
-│   ├── preview.html             (static interactive preview page)
-│   ├── preview_check_screenshot.png
-│   └── check_report.json
+│   ├── enhanced_layer_plan.json (layout + resource paths for Figma)
+│   ├── check_report.json
+│   └── layers/                  (transparency-checked layers)
 ├── 05-refinement-preview/
 │   └── preview_{timestamp}.png
 ├── 06-refinement-layers/
 │   └── {layer_name}/            (one folder per layer)
 ├── 07-output/
-│   ├── preview.html             (final interactive web preview)
 │   ├── final_preview.png
 │   ├── layers/                  (clean names, no timestamps)
-│   └── manifest.json
+│   ├── manifest.json
+│   └── enhanced_layer_plan.json (layout data for Figma import)
 └── 08-variants/                 (if Phase 8 executed)
     └── {control_name}/          (hover/active/disabled)
 ```
@@ -218,10 +222,10 @@ Two independent choices at Phase 1:
 | 1 — Requirements | [`references/phase-1-requirements.md`](references/phase-1-requirements.md) | `validate_size.py`, `generate_image.py` |
 | 2 — Confirmation | [`references/phase-2-confirmation.md`](references/phase-2-confirmation.md) | (analysis + write `layer_plan.json` with layout + opacity) |
 | 3 — Rough Design | [`references/phase-3-rough-design.md`](references/phase-3-rough-design.md) | `generate_image.py edit` |
-| 4 — Web Composition Check | [`references/phase-4-check.md`](references/phase-4-check.md) | `check_transparency.py`, `generate_preview.py` |
+| 4 — Composition Check | [`references/phase-4-check.md`](references/phase-4-check.md) | `check_transparency.py`, `detect_layer_positions.py`, `generate_preview.py` |
 | 5 — Refinement Preview | [`references/phase-5-refinement-preview.md`](references/phase-5-refinement-preview.md) | `generate_image.py edit` |
 | 6 — Layer Refinement | [`references/phase-6-refinement-layers.md`](references/phase-6-refinement-layers.md) | `generate_image.py edit`, `check_transparency.py` |
-| 7 — Output | [`references/phase-7-output.md`](references/phase-7-output.md) | `generate_preview.py` (copy + write manifest) |
+| 7 — Output | [`references/phase-7-output.md`](references/phase-7-output.md) | `generate_preview.py`, layer copy + `manifest.json` |
 | 8 — State Variants | [`references/phase-8-variants.md`](references/phase-8-variants.md) | `generate_variants.py` |
 
 **Script usage examples**: See [`references/script-usage.md`](references/script-usage.md) for detailed invocation commands.
@@ -251,8 +255,8 @@ Two independent choices at Phase 1:
 7. **Transparent layers** (best-effort): Non-background layers SHOULD have transparent backgrounds where possible. Use `--remove-bg` with rembg as an optional optimization when the API does not output true alpha. If rembg fails to produce a clean result, the original layer may be kept with user confirmation.
 8. **Preserve aspect ratio**: When fixing non-compliant sizes, always preserve the original aspect ratio.
 9. **Image-to-image for modifications**: Any revision, fix, or incremental update MUST use `generate_image.py edit` (image-to-image) with the existing preview or layer as `--image`. Do NOT use `generate` (text-to-image) for modifications. Multiple `--image` paths are supported for multi-reference editing (images are combined horizontally, max 5 images).
-10. **Layout extraction in Phase 2**: Every layer in `layer_plan.json` MUST include a `layout` object with `x`, `y`, `width`, `height` (full-size canvas coordinates). This is required for the HTML preview generator.
-11. **Preview generation**: Phase 4 and Phase 7 use `generate_preview.py` to produce an interactive HTML preview. The Phase 4 preview supports drag/resize/export for layout fine-tuning.
+10. **Layout extraction in Phase 2**: Every layer in `layer_plan.json` MUST include a `layout` object with `x`, `y`, `width`, `height` (full-size canvas coordinates). This is required for Figma import and layer positioning.
+11. **Figma as review tool**: All layer layouts and PNG outputs are designed for direct import into Figma via the Figma plugin. Use Figma to review composition, alignment, and fine-tune positions.
     - **Algorithmic layer alignment** (`detect_layer_positions.py`): Offered when the user reports misaligned layers. By default runs on all eligible layers, but supports `--layer <id>` to target only specific layers — useful when only 1–2 layers need correction or when verifying detection quality on a single layer before batch processing.
     - **Adaptive multi-feature profiles** (`default`, `structure_heavy`, `color_heavy`, `texture_heavy`): The matcher fuses multiple visual features (RGB SSD, Sobel gradient, Canny edge, HSV color, LBP texture) weighted by a project-specific profile. The agent inspects the preview and selects the profile before detection. **General rule: use `default` unless the UI clearly falls into one of the specialized categories.** See [`references/matching-profiles.md`](references/matching-profiles.md) for the full selection guide. Enabled via `--profile <name>`.
     - **`--force` flag**: Bypasses opacity/background/repeat safety checks. Only use when the user **explicitly demands** detection on a layer that would normally be skipped (e.g., a semitransparent panel or a background shape the user wants aligned). Warn the user that forced detection may produce unreliable results.

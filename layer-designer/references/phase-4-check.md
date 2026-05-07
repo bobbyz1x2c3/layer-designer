@@ -1,14 +1,13 @@
-# Phase 4: Rough Design Check
+# Phase 4: Composition Check
 
-**Goal**: Verify layer transparency and generate the interactive web preview data for user review.
+**Goal**: Verify layer transparency and validate layer layouts for Figma import.
 
 **When to read this file**: Agent MUST read this file when entering Phase 4. Do not skip this phase — it catches transparency issues and provides the layout review checkpoint before refinement.
 
 **Output Path Pattern**:
 ```
 {output_root}/{project_name}/04-check/
-├── enhanced_layer_plan.json     # layout + resource paths for the preview
-├── preview.html                 # generic static preview page (from templates/)
+├── enhanced_layer_plan.json     # layout + resource paths for Figma import
 └── check_report.json
 ```
 
@@ -81,7 +80,7 @@ python scripts/check_transparency.py --config config.json \
   --image {pl_layer_path} --remove-bg --auto-crop --crop-padding 4 --pl-mode
 ```
 
-`--pl-mode` disables the stage2 padding heuristic for that layer, so the matte runs once and the resulting `cropped_size` reflects the element's true region (which then becomes a valid `crop_bbox` fallback for `generate_preview.py` when template matching fails).
+`--pl-mode` disables the stage2 padding heuristic for that layer, so the matte runs once and the resulting `cropped_size` reflects the element's true region.
 
 ---
 
@@ -126,15 +125,9 @@ python scripts/detect_layer_positions.py \
 - Normal layers are **not** auto-detected (user must explicitly request)
 - PL layers with `repeat_mode` are **skipped** even if marked `precise_layout: true`
 
-After detection, generate the preview with detected layouts applied:
+After detection, apply detected layouts to `enhanced_layer_plan.json`:
 
-```bash
-python scripts/generate_preview.py \
-  --config config.json \
-  --project my-app \
-  --phase check \
-  --apply-detected-layouts
-```
+The detection script writes `04-check/detected_layouts.json`. The agent reads this file and updates `enhanced_layer_plan.json` with the detected positions, or provides a summary to the user.
 
 ### Normal Mode On-Demand Detection
 
@@ -164,13 +157,6 @@ python scripts/detect_layer_positions.py \
   --preview output/my-app/01-requirements/previews/preview_v2_001.png \
   --phase rough \
   --profile structure_heavy
-
-# 4. Apply detected layouts (backs up existing enhanced_layer_plan.json)
-python scripts/generate_preview.py \
-  --config config.json \
-  --project my-app \
-  --phase check \
-  --apply-detected-layouts
 ```
 
 **Per-layer detection**: The `--layer` / `-l` flag accepts a layer `id` or `name` and can be used multiple times. Only the specified layers will be template-matched; others are skipped. This is useful when:
@@ -218,7 +204,7 @@ When a `grid` or `list` layer has `auto_panel.enabled: true`, the panel layer (e
 
 **Script**: `expand_repeats.py`
 
-If `layer_plan.json` contains layers with `repeat_mode: "grid"` or `repeat_mode: "list"`, expand them into individual instances before generating the preview:
+If `layer_plan.json` contains layers with `repeat_mode: "grid"` or `repeat_mode: "list"`, expand them into individual instances before generating the enhanced layer plan:
 
 ```bash
 python scripts/expand_repeats.py \
@@ -234,15 +220,15 @@ This script:
 - Writes `expanded_layer_plan.json` with all instances as individual layer entries
 - Each instance shares the same `source` path (pointing to the parent layer's PNG)
 
-**When to run**: Always run before `generate_preview.py` if `repeat_mode` is present. If no `repeat_mode` layers exist, the script outputs a no-op message and `generate_preview.py` will fall back to `layer_plan.json`.
+**When to run**: Always run if `repeat_mode` is present. If no `repeat_mode` layers exist, the script outputs a no-op message and the agent falls back to `layer_plan.json`.
 
 ---
 
 ## Step 3: Generate Enhanced Layer Plan
 
-**Script**: `generate_preview.py` (generates JSON + copies template)
+**Script**: `generate_preview.py` (generates JSON for Figma import)
 
-Generate the `enhanced_layer_plan.json` and copy the generic preview template:
+Generate the `enhanced_layer_plan.json` for Figma import:
 
 ```bash
 # Standard (scaled planned layouts, auto-prefers expanded_layer_plan.json)
@@ -260,8 +246,7 @@ python scripts/generate_preview.py \
 ```
 
 This produces:
-- `04-check/enhanced_layer_plan.json` — contains layout, resource paths, and metadata
-- `04-check/preview.html` — static preview page copied from `templates/preview.html`
+- `04-check/enhanced_layer_plan.json` — contains layout, resource paths, and metadata for Figma import
 
 ### `enhanced_layer_plan.json` format
 
@@ -292,14 +277,13 @@ The `source` field is the relative path from `04-check/` to the layer PNG. The `
 
 Send a message to the user with:
 1. The location of `enhanced_layer_plan.json`
-2. The location of `preview.html`
-3. A summary of the layer list
+2. A summary of the layer list
+3. Instructions for Figma import
 
 **Example message**:
-> **Phase 4 布局预览已生成**
+> **Phase 4 图层检查完成**
 >
 > 📁 数据文件：`04-check/enhanced_layer_plan.json`
-> 🌐 预览网页：`04-check/preview.html`
 >
 > 当前图层（共 4 个）：
 > - background (1920×1080) @ (0, 0)
@@ -307,23 +291,17 @@ Send a message to the user with:
 > - header (1680×80) @ (240, 0)
 > - buttons (280×60) @ (1520, 960)
 >
-> **请打开 `preview.html` 查看布局效果。**
-> 你可以直接在浏览器中：
-> - 拖拽图层调整位置
-> - 拖拽边角手柄调整大小
-> - 在右侧面板修改 Name / Content / Status / Layout 数值
-> - 点击 **💾 Save JSON** 导出修改后的 `enhanced_layer_plan.json`
->
-> 导出的 JSON 可以：
-> - 直接替换 `04-check/enhanced_layer_plan.json`
-> - 或发送给我，由我来替换
+> **请使用 Figma 插件导入查看布局效果。**
+> - 插件读取 `enhanced_layer_plan.json` + 图层 PNG
+> - 自动按坐标放置图层
+> - 可直接在 Figma 中调整位置、大小
 >
 > 如果布局满意，请选择：
 > - 回复 **OK** → 进入精修阶段（Phase 5~7，高质量最终输出）
-> - 回复 **EXIT** → 不需要精修，直接使用当前粗稿图层交付（适合只需要效果图/预览的场景）
-> - 告诉我具体问题，或自行调整后导出 JSON。
+> - 回复 **EXIT** → 不需要精修，直接使用当前粗稿图层交付
+> - 告诉我具体问题，或在 Figma 中调整后反馈 JSON
 >
-> **布局偏移？** 如果发现某些图层位置不对，我可以尝试用多尺度模板匹配算法在预览图中找到更准确的位置。
+> **布局偏移？** 如果发现某些图层位置不对，我可以尝试用多尺度模板匹配算法找到更准确的位置。
 > - 适用于：不透明控件、角色立绘、按钮等**内容明确**的图层
 > - 不适用于：半透明面板（opacity < 0.85）、大面积透明只剩小图标的图层、启用了grid或list的控件
 > - 需要时请回复：**"尝试算法对齐"**
@@ -337,9 +315,9 @@ Send a message to the user with:
 **User replies**:
 - **"OK"** → Proceed to Phase 5 (Refinement Preview)
 - **"EXIT" / "退出" / "不需要精修" / "直接交付"** → Proceed to Step 6 (Fast Delivery with rough layers)
-- **"I want to edit myself" / no reply yet** → Wait. The user may open `preview.html`, adjust the layout, and export a new JSON.
-- **"尝试算法对齐"** / **"use algorithm"** / **"align layers"** → Run Step 2 (`detect_layer_positions.py`), then re-run `generate_preview.py --apply-detected-layouts` (backs up the previous plan automatically), show the updated preview, and ask for confirmation again.
-- **Provides a new `enhanced_layer_plan.json`** → Replace the existing one in `04-check/`, optionally re-run `generate_preview.py` to refresh, then ask for confirmation again.
+- **"I want to edit myself" / no reply yet** → Wait. The user may adjust in Figma and provide an updated JSON.
+- **"尝试算法对齐"** / **"use algorithm"** / **"align layers"** → Run Step 2 (`detect_layer_positions.py`), update `enhanced_layer_plan.json` with detected layouts, show the updated summary, and ask for confirmation again.
+- **Provides a new `enhanced_layer_plan.json`** → Replace the existing one in `04-check/`, then ask for confirmation again.
 - **Adjustment request** (describes issues) → Go to Step 5 (Batch Fix)
 
 **Important**: The agent MUST receive an explicit "OK" or "EXIT" before leaving Phase 4. Do NOT proceed automatically.
@@ -374,11 +352,9 @@ If the user chooses **EXIT** without entering refinement (Phase 5~7), deliver th
    - `sidebar_001.png` → `sidebar.png`
    - etc.
 
-2. **Copy preview** from `04-check/preview.html` to `07-output/preview.html`
+2. **Copy `enhanced_layer_plan.json`** to `07-output/enhanced_layer_plan.json`
 
-3. **Copy `enhanced_layer_plan.json`** to `07-output/enhanced_layer_plan.json`
-
-4. **Generate `manifest.json`**:
+3. **Generate `manifest.json`**:
    ```json
    {
      "project": "my-dashboard",
@@ -386,17 +362,13 @@ If the user chooses **EXIT** without entering refinement (Phase 5~7), deliver th
      "style_anchor": "...",
      "layers": [...],
      "stacking_order": [...],
-     "previews": {
-       "check": "04-check/preview.html",
-       "final": "07-output/preview.html"
-     },
      "refinement_skipped": true,
      "variants_requested": false
    }
    ```
 
-5. **Present to user**:
-   > "已直接交付粗稿图层（未进入精修阶段）。所有图层位于 `07-output/layers/`，预览网页为 `07-output/preview.html`。"
+4. **Present to user**:
+   > "已直接交付粗稿图层（未进入精修阶段）。所有图层位于 `07-output/layers/`，布局数据位于 `07-output/enhanced_layer_plan.json`。请使用 Figma 插件导入查看。"
 
 **Use case**: User only needs preview-quality assets or reference images, not pixel-perfect final deliverables.
 
@@ -406,11 +378,9 @@ If the user chooses **EXIT** without entering refinement (Phase 5~7), deliver th
 
 **Output upon exit (OK path)**:
 - `04-check/enhanced_layer_plan.json` — final layout data (may have been user-edited)
-- `04-check/preview.html` — static preview page
 - `04-check/check_report.json` — issue log and fix history
 
 **Output upon exit (EXIT path)**:
 - `07-output/layers/*.png` — rough layers with clean names
-- `07-output/preview.html` — web preview
-- `07-output/enhanced_layer_plan.json` — layout data
+- `07-output/enhanced_layer_plan.json` — layout data for Figma import
 - `07-output/manifest.json` — delivery manifest with `refinement_skipped: true`

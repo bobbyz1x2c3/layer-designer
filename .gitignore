@@ -37,6 +37,7 @@ ENV/
 
 # Agent-specific docs (not for repo)
 AGENTS.md
+CLAUDE.md
 
 # IDE / Editor
 .vscode/

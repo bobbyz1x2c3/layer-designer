@@ -7,8 +7,7 @@
 **Output Path Pattern**:
 ```
 {output_root}/{project_name}/07-output/
-├── preview.html                 # final interactive web preview
-├── enhanced_layer_plan.json     # layout + resource paths for preview
+├── enhanced_layer_plan.json     # layout + resource paths for Figma import
 ├── final_preview.png
 ├── layers/
 │   ├── background.png
@@ -31,6 +30,7 @@ Present all final layer images with their names. Explain:
 - Each layer is a transparent PNG (except background)
 - Layers are in stacking order (background → foreground)
 - User can use them individually or composite them together
+- Import into Figma using the Figma plugin for precise layout review
 
 ---
 
@@ -49,9 +49,9 @@ If user specifies controls: proceed to Phase 8.
 
 ---
 
-## Step 4: Generate Final Web Preview
+## Step 4: Generate Final Layer Plan
 
-Generate the final interactive web preview for delivery:
+Generate the final `enhanced_layer_plan.json` for delivery:
 
 ```bash
 python scripts/generate_preview.py \
@@ -60,17 +60,16 @@ python scripts/generate_preview.py \
   --phase output
 ```
 
-This generates `07-output/preview.html` + `07-output/enhanced_layer_plan.json` with `source` paths pointing to `layers/{layer_name}.png`.
+This generates `07-output/enhanced_layer_plan.json` with `source` paths pointing to `layers/{layer_name}.png`.
 
-This is the **deliverable interactive preview** the user can open in a browser.
+This is the **deliverable layout data** the Figma plugin reads for precise layer placement.
 
 ---
 
 ## Step 5: Save Final Output
 
-Copy refined layers and preview to `07-output/` with stable names (no timestamps):
+Copy refined layers to `07-output/` with stable names (no timestamps):
 - Preview image → `final_preview.png` (if available)
-- Web preview → `preview.html`
 - Each layer → `layers/{layer_name}.png`
 
 **Repeat-mode layer output:**
@@ -83,8 +82,6 @@ When copying refined layers from `06-refinement-layers/`, include:
 | **Panel** (`is_repeat_panel`) | `06-refinement-layers/{panel_id}/{panel_id}_*.png` | `07-output/layers/{panel_id}.png` |
 
 Instance layers do NOT need to be copied — they share the parent's PNG via `source` path in `enhanced_layer_plan.json`.
-
-`generate_preview.py --phase output` automatically sets correct `source` paths for all layer types.
 
 Generate `manifest.json` via `PathManager.write_manifest()`:
 ```json
@@ -100,10 +97,6 @@ Generate `manifest.json` via `PathManager.write_manifest()`:
     }
   ],
   "stacking_order": ["background", "..."],
-  "previews": {
-    "check": "04-check/preview.html",
-    "final": "07-output/preview.html"
-  },
   "refinement_skipped": false,
   "variants_requested": false
 }
@@ -117,3 +110,4 @@ Generate `manifest.json` via `PathManager.write_manifest()`:
 - `final_preview.png`
 - `layers/*.png`
 - `manifest.json`
+- `enhanced_layer_plan.json` — layout data for Figma import

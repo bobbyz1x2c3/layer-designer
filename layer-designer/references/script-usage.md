@@ -69,7 +69,7 @@ python scripts/check_transparency.py \
   --image output/my-app/03-rough-design/sidebar/sidebar_001.png
 ```
 
-### Generate interactive web preview (Phase 4 / Phase 7)
+### Generate enhanced layer plan for Figma (Phase 4 / Phase 7)
 
 ```bash
 python scripts/generate_preview.py \
@@ -77,3 +77,5 @@ python scripts/generate_preview.py \
   --project my-app \
   --phase check
 ```
+
+This generates `enhanced_layer_plan.json` with layout + resource paths for Figma plugin import.

@@ -68,10 +68,10 @@ Phase 8 状态变体      →  generate_variants.py（可选）
 | 1 | Requirements | 用户需求 + 尺寸 | 预览图 + size_plan.json | `validate_size.py`, `generate_image.py` |
 | 2 | Confirmation | 确认预览图 | layer_plan.json（含 layout + repeat_mode）+ style_anchor | （视觉分析，无脚本生成） |
 | 3 | Rough Design | layer_plan.json | 各图层隔离图（early_size）+ layout | `generate_image.py edit` |
-| 4 | Web Composition Check | 图层隔离图 | 网页预览 + 截图 + 校验报告 | `expand_repeats.py`, `check_transparency.py`, `generate_preview.py` |
+| 4 | Composition Check | 图层隔离图 | enhanced_layer_plan.json + 截图 + 校验报告 | `expand_repeats.py`, `check_transparency.py`, `generate_preview.py` |
 | 5 | Refinement Preview | 原始预览图 / Phase 4 截图 | 精修预览（full_size） | `generate_image.py edit` |
 | 6 | Refinement Layers | 精修预览 | 精修图层（full_size）+ layout | `generate_image.py edit`, `check_transparency.py` |
-| 7 | Output | 精修图层 | preview.html + layers/ + manifest.json | `generate_preview.py`（copy + write） |
+| 7 | Output | 精修图层 | enhanced_layer_plan.json + layers/ + manifest.json | `generate_preview.py`（生成 JSON） |
 | 8 | State Variants | 控件图层 | hover/active/disabled 变体 | `generate_variants.py` |
 
 ---
@@ -181,8 +181,7 @@ Phase 8 状态变体      →  generate_variants.py（可选）
 - 扫描图层目录，收集最新 PNG 的资源路径
 - 按 `size_plan.json` 缩放 layout 坐标（rough/check phase）
 - 生成 `enhanced_layer_plan.json`（含 name, content, status, layout, source）
-- 复制通用静态模板 `templates/preview.html` 到输出目录
-- 预览模板支持 repeat 实例的分组显示、🔄 标识、以及编辑面板中的 parent/cell 信息
+- 用于 Figma 插件导入，支持 repeat 实例的分组显示、🔄 标识
 
 ### `generate_variants.py` — 状态变体
 
@@ -302,9 +301,8 @@ agent 进入工作流时的阅读顺序：
 │   │   └── sidebar_{timestamp}.png
 │   └── ... (one folder per layer)
 ├── 04-check/
-│   ├── enhanced_layer_plan.json          # layout + 资源路径
-│   ├── preview.html                      # 静态交互式预览页面
-│   ├── preview_check_screenshot.png      # 网页截图
+│   ├── enhanced_layer_plan.json          # layout + 资源路径（Figma 导入）
+│   ├── preview_check_screenshot.png      # 截图
 │   └── check_report.json
 ├── 05-refinement-preview/
 │   └── preview_{timestamp}.png
@@ -313,7 +311,7 @@ agent 进入工作流时的阅读顺序：
 │   │   └── background_{timestamp}.png
 │   └── ... (one folder per layer)
 ├── 07-output/
-│   ├── preview.html                      # 最终交付网页预览
+│   ├── enhanced_layer_plan.json          # layout 数据（Figma 导入）
 │   ├── final_preview.png
 │   ├── layers/
 │   │   ├── background.png

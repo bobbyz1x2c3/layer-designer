@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-Generate enhanced_layer_plan.json for Phase 4 interactive web preview.
+Generate enhanced_layer_plan.json for Figma import.
 
 This script:
 1. Reads layer_plan.json and size_plan.json
 2. Scans the layer directories to find the latest PNG for each layer
 3. Produces enhanced_layer_plan.json with layout + resource paths
-4. Copies the generic preview.html template into the check directory
 
-The resulting files in 04-check/:
-- enhanced_layer_plan.json  → data source for the preview
-- preview.html              → generic static preview page (copied from templates/)
+The resulting file in 04-check/ (or 07-output/):
+- enhanced_layer_plan.json  → layout data for Figma plugin import
 
 Usage:
     python generate_preview.py --config config.json --project my-app --phase check
-    python generate_preview.py --config config.json --project my-app --phase refinement
+    python generate_preview.py --config config.json --project my-app --phase output
 """
 
 import argparse
@@ -75,12 +73,12 @@ def generate_enhanced_plan(
     phase: str,
     config_path: str | None = None,
     apply_detected_layouts: bool = False,
-) -> tuple[str, str]:
+) -> str:
     """
-    Generate enhanced_layer_plan.json and copy preview template.
+    Generate enhanced_layer_plan.json for Figma import.
 
     Returns:
-        (enhanced_plan_path, preview_html_path)
+        enhanced_plan_path
     """
     pm = PathManager(project_name, config_path=config_path)
 
@@ -330,27 +328,12 @@ def generate_enhanced_plan(
     with open(plan_path, "w", encoding="utf-8-sig") as f:
         json.dump(enhanced_plan, f, indent=2, ensure_ascii=False)
 
-    # Copy generic preview template
-    script_dir = Path(__file__).parent.resolve()
-    template_path = script_dir.parent / "templates" / "preview.html"
-    preview_path = output_dir / "preview.html"
-
-    if template_path.exists():
-        shutil.copy2(template_path, preview_path)
-    else:
-        # Fallback: write a minimal placeholder
-        preview_path.write_text(
-            '<!DOCTYPE html><html><body><h1>Preview template not found</h1>'
-            f'<p>Expected: {template_path}</p></body></html>',
-            encoding="utf-8"
-        )
-
-    return str(plan_path), str(preview_path)
+    return str(plan_path)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate enhanced_layer_plan.json and copy preview template"
+        description="Generate enhanced_layer_plan.json for Figma import"
     )
     parser.add_argument("--config", help="Path to config.json")
     parser.add_argument("--project", "-p", required=True, help="Project name")
@@ -361,12 +344,11 @@ def main():
     args = parser.parse_args()
 
     try:
-        plan_path, preview_path = generate_enhanced_plan(
+        plan_path = generate_enhanced_plan(
             args.project, args.phase, config_path=args.config,
             apply_detected_layouts=args.apply_detected_layouts,
         )
-        print(f"PLAN:    {plan_path}")
-        print(f"PREVIEW: {preview_path}")
+        print(f"PLAN: {plan_path}")
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)

@@ -71,7 +71,7 @@ python scripts/generate_preview.py \
   --phase check
 ```
 
-This produces `04-check/preview.html` with all layers composited via CSS. Open in a browser to verify the final layout.
+This produces `04-check/enhanced_layer_plan.json` with updated layer paths. Import into Figma to verify the final layout.
 
 ---
 

@@ -119,7 +119,7 @@ python scripts/generate_image.py edit \
 - The existing prompt already instructs the model to "STRICTLY maintain the element's original aspect ratio", so the element should remain proportionally correct inside the canvas.
 - After generation, the layer image will have transparent padding on the shorter sides. **Do NOT auto-crop in Phase 3** — the element is not yet matted and the alpha channel may be unreliable.
 - Instead, **record the `extreme_ratio: true` flag in `layer_plan.json`** for this layer. Phase 4 will handle auto-cropping **after** rembg produces a clean alpha channel.
-- `generate_preview.py` automatically prefers `*_cropped.png` when available, so Phase 4 preview will show the element at its true proportions.
+- `generate_preview.py` automatically prefers `*_cropped.png` when available, so Phase 4 composition check will show the element at its true proportions.
 
 **Background layer exception**:
 - Background layer does NOT need transparent background
