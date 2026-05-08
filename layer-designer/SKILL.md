@@ -276,6 +276,7 @@ Two independent choices at Phase 1:
      - Default to `low` unless visual inspection clearly justifies higher.
    - **Preview phases (1, 5)**: Use `low` for initial previews, `medium`/`high` only for final confirmation.
 7. **Transparent layers** (best-effort): Non-background layers SHOULD have transparent backgrounds where possible. Use `--remove-bg` with rembg as an optional optimization when the API does not output true alpha. If rembg fails to produce a clean result, the original layer may be kept with user confirmation.
+   - **CRITICAL — rembg 抠图必须串行执行**：每次只允许一个 `check_transparency.py --remove-bg` 进程在运行。即便 Phase 3/4/6/8 的 `generate_image.py` 在并行 subagent 中加速，所有 `--remove-bg` 步骤必须由**主 agent 在生成阶段全部结束后顺序逐个调用**。每个 rembg session 会把完整 ONNX 模型加载到内存（U²Net ≈ 200 MB，BiRefNet 可达 1 GB+），并发会按倍数放大占用并触发 OOM。禁止使用 ThreadPoolExecutor、`run_in_background`、或并行 subagent 包装该步骤。
 8. **Preserve aspect ratio**: When fixing non-compliant sizes, always preserve the original aspect ratio.
 9. **Image-to-image for modifications**: Any revision, fix, or incremental update MUST use `generate_image.py edit` (image-to-image) with the existing preview or layer as `--image`. Do NOT use `generate` (text-to-image) for modifications. Multiple `--image` paths are supported for multi-reference editing (images are combined horizontally, max 5 images).
 10. **Layout extraction in Phase 2**: Every layer in `layer_plan.json` MUST include a `layout` object with `x`, `y`, `width`, `height` (full-size canvas coordinates). This is required for Figma import and layer positioning.
