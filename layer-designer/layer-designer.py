@@ -21,6 +21,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+__version__ = "0.3.1-dev"
+
 # Project root is the directory containing this script
 ROOT = Path(__file__).resolve().parent
 SCRIPTS = ROOT / "scripts"
@@ -221,6 +223,7 @@ def main():
         prog="layer-designer",
         description="Layer Designer CLI — wrapper for core scripts",
     )
+    parser.add_argument("--version", "-v", action="version", version=f"layer-designer {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # update

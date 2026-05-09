@@ -18,24 +18,21 @@ Behavior:
 """
 
 import argparse
-import importlib.util
 import json
+import re
 import sys
 from copy import deepcopy
 from pathlib import Path
 
 
 def _get_project_version(config_file: Path) -> str | None:
-    """Read version.py next to config.json for the canonical project version."""
-    version_file = config_file.parent / "version.py"
-    if not version_file.exists():
+    """Read __version__ from layer-designer.py next to config.json."""
+    cli_file = config_file.parent / "layer-designer.py"
+    if not cli_file.exists():
         return None
-    spec = importlib.util.spec_from_file_location("version", version_file)
-    if not spec or not spec.loader:
-        return None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return getattr(mod, "__version__", None)
+    content = cli_file.read_text(encoding="utf-8")
+    m = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', content, re.M)
+    return m.group(1) if m else None
 
 
 def _deep_merge(base: dict, template: dict, path: str = "") -> dict:
