@@ -18,10 +18,24 @@ Behavior:
 """
 
 import argparse
+import importlib.util
 import json
 import sys
 from copy import deepcopy
 from pathlib import Path
+
+
+def _get_project_version(config_file: Path) -> str | None:
+    """Read version.py next to config.json for the canonical project version."""
+    version_file = config_file.parent / "version.py"
+    if not version_file.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("version", version_file)
+    if not spec or not spec.loader:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return getattr(mod, "__version__", None)
 
 
 def _deep_merge(base: dict, template: dict, path: str = "") -> dict:
@@ -72,6 +86,14 @@ def migrate(config_path: str, dry_run: bool = False) -> dict:
 
     merged = _deep_merge(user_cfg, template)
     merged = _apply_renames(merged)
+
+    # Sync config_version to project version so user config tracks schema evolution
+    project_version = _get_project_version(config_file)
+    if project_version:
+        old_version = merged.get("config_version", "<none>")
+        merged["config_version"] = project_version
+        if old_version != project_version:
+            print(f"[MIGRATE] config_version: {old_version} -> {project_version}")
 
     if dry_run:
         print(json.dumps(merged, indent=2, ensure_ascii=False))

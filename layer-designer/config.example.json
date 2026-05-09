@@ -1,6 +1,6 @@
 {
   "_comment": "Layered Design Generator configuration. Copy this file to config.json and fill in your API key. Environment variables like ${OPENAI_API_KEY} are resolved at runtime. Provider can be 'openai' (default) or 'apimart'.",
-  "config_version": "1.1",
+  "config_version": "0.3.1-dev",
   "download_mirror": "",
   "api": {
     "provider": "openai",
