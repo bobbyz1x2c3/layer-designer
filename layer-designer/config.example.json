@@ -1,5 +1,6 @@
 {
   "_comment": "Layered Design Generator configuration. Copy this file to config.json and fill in your API key. Environment variables like ${OPENAI_API_KEY} are resolved at runtime. Provider can be 'openai' (default) or 'apimart'.",
+  "config_version": "1.1",
   "download_mirror": "",
   "api": {
     "provider": "openai",
@@ -7,19 +8,24 @@
       "provider_type": "openai",
       "base_url": "http://your-endpoint-ip:8081/v1",
       "api_key": "${OPENAI_API_KEY}",
-      "model": "gpt-image-2",
+      "default_model": "gpt-image-2",
       "default_size": "1024x1024",
       "default_quality_low": "low",
       "default_quality_medium": "medium",
       "default_quality_high": "high",
       "default_n": 1,
-      "output_format": "png"
+      "output_format": "png",
+      "phase_models": {
+        "preview": "gpt-image-2",
+        "layer": "gpt-image-1.5",
+        "variant": "gpt-image-1.5"
+      }
     },
     "apimart": {
       "provider_type": "async_task",
       "base_url": "https://api.apimart.ai/v1",
       "api_key": "${APIMART_API_KEY}",
-      "model": "gpt-image-2",
+      "default_model": "gpt-image-2",
       "default_size": "1024x1024",
       "default_quality_low": "low",
       "default_quality_medium": "medium",
@@ -27,7 +33,16 @@
       "default_n": 1,
       "output_format": "png",
       "official_fallback": false,
-      "prefer_official": true,
+      "phase_models": {
+        "preview": "gpt-image-2-official",
+        "layer": "gpt-image-1.5-official",
+        "variant": "gpt-image-1.5-official"
+      },
+      "model_constraints": {
+        "gpt-image-2": {
+          "supports_transparent_output": true
+        }
+      },
       "async_config": {
         "submit_path": "/images/generations",
         "poll_path_template": "/tasks/{task_id}",
@@ -53,14 +68,34 @@
       "max_pixels": 8294400,
       "supports_transparent_output": false
     },
-    "gpt-image-1.5": {
+    "gpt-image-2-official": {
       "max_edge": 3840,
       "align": 16,
       "max_ratio": 3.0,
       "min_pixels": 655360,
       "max_pixels": 8294400,
+      "supports_transparent_output": false,
+      "notes": "Apimart official-routed variant of gpt-image-2"
+    },
+    "gpt-image-1.5": {
+      "max_edge": 1536,
+      "align": 16,
+      "max_ratio": 1.5,
+      "min_pixels": 1048576,
+      "max_pixels": 1572864,
       "supports_transparent_output": true,
+      "allowed_sizes": ["1024x1024", "1024x1536", "1536x1024"],
       "notes": "Use with endpoints that support background=transparent for alpha PNG output"
+    },
+    "gpt-image-1.5-official": {
+      "max_edge": 1536,
+      "align": 16,
+      "max_ratio": 1.5,
+      "min_pixels": 1048576,
+      "max_pixels": 1572864,
+      "supports_transparent_output": true,
+      "allowed_sizes": ["1024x1024", "1024x1536", "1536x1024"],
+      "notes": "Apimart official-routed gpt-image-1.5; supports transparent alpha output"
     }
   },
   "workflow": {

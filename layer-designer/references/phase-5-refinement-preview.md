@@ -30,7 +30,7 @@ python scripts/generate_image.py edit \
   --config config.json \
   --image {confirmed_preview_or_phase4_screenshot} \
   --prompt "Refine this UI design to high quality, polished final version. {style_anchor}. Enhance visual hierarchy, spacing consistency, color accuracy, shadow refinement. Maintain all elements and layout exactly." \
-  --output {refined_preview_path} --size {full_w}x{full_h} --quality high
+  --output {refined_preview_path} --size {full_w}x{full_h} --quality high --phase preview
 ```
 
 - `size`: `full_size` from `size_plan.json` (already validated in Phase 1 — do NOT modify)

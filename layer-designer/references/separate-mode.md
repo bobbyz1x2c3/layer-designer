@@ -184,7 +184,7 @@ python scripts/generate_image.py edit \
   --prompt "{prompt}" \
   --output output/{project}/03-rough-design/{layer_name}/{layer_name}_001.png \
   --size {canvas_w}x{canvas_h} \
-  --quality {tier}
+  --quality {tier} --phase layer
 ```
 
 **Timeout guideline**: PL mode at full canvas size:

@@ -70,7 +70,7 @@ python scripts/generate_image.py edit \
   --config config.json \
   --image {confirmed_preview_path} \
   --prompt "{layer_prompt}" \
-  --output {layer_path} --size {layer_w}x{layer_h} --quality {tier}
+  --output {layer_path} --size {layer_w}x{layer_h} --quality {tier} --phase layer
 ```
 
 - **Native model path**: Use agent's image-to-image/editing tool. Pass preview as reference + layer isolation prompt + style anchor.
@@ -104,14 +104,14 @@ python scripts/generate_image.py edit \
   --config config.json \
   --image {confirmed_preview_path} \
   --prompt "Extract ONLY one product card. {description}. Transparent background, isolated element. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio..." \
-  --output {layer_path} --size {layer_w}x{layer_h} --quality {tier}
+  --output {layer_path} --size {layer_w}x{layer_h} --quality {tier} --phase layer
 
 # Panel background (if auto_panel enabled)
 python scripts/generate_image.py edit \
   --config config.json \
   --image {confirmed_preview_path} \
   --prompt "Extract ONLY the container panel background for the product card grid. White rounded rectangle panel, no cards, no elements inside. {style_anchor}." \
-  --output {panel_path} --size {panel_w}x{panel_h} --quality low
+  --output {panel_path} --size {panel_w}x{panel_h} --quality low --phase layer
 ```
 
 **Extreme-ratio layer handling**:
@@ -144,7 +144,7 @@ python scripts/generate_image.py edit \
   --config config.json \
   --image {preview_path} \
   --prompt "{layer_prompt}" \
-  --output {layer_path} --size {layer_w}x{layer_h} --quality {tier} \
+  --output {layer_path} --size {layer_w}x{layer_h} --quality {tier} --phase layer \
   --no-wait
 ```
 

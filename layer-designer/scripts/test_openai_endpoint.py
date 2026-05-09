@@ -199,11 +199,14 @@ def main():
         openai_cfg = api.get("openai", {})
         base_url = openai_cfg.get("base_url", cfg.get("base_url"))
         api_key = openai_cfg.get("api_key", cfg.get("api_key"))
-        model = openai_cfg.get("model", cfg.get("model", "gpt-image-2"))
+        model = (openai_cfg.get("default_model")
+                 or openai_cfg.get("model")
+                 or cfg.get("default_model")
+                 or "gpt-image-2")
     else:
         base_url = cfg.get("base_url", "https://your-api-gateway.com/v1")
         api_key = cfg.get("api_key", "your-key")
-        model = cfg.get("model", "gpt-image-2")
+        model = cfg.get("default_model", "gpt-image-2")
 
     print(f"Endpoint: {base_url}")
     print(f"Model: {model}")

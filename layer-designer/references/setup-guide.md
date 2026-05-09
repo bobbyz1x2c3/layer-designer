@@ -35,6 +35,17 @@ assert sys.version_info >= (3, 9), "Python 3.9+ required"
 **询问用户**：
 > 你是否已有可用的图像生成 API？本项目需要支持 OpenAI 兼容接口的端点（如 gpt-image-2、gpt-image-1.5 或类似模型）。
 
+**模型选择提示（Agent 必须告知用户）**：
+
+| 模型 | 透明输出 | 适用阶段 | 备注 |
+|------|----------|----------|------|
+| `gpt-image-2` / `gpt-image-2-official` | 否 | Phase 1 / 5 合成预览 | 不支持原生 alpha,layer 阶段需走 rembg |
+| `gpt-image-1.5` / `gpt-image-1.5-official` | **是** | Phase 3 / 6 / 8 / Separate Mode 分层 | 原生 `background=transparent`,layer 阶段省 rembg |
+
+- 用 **apimart** provider 的用户应选带 `-official` 后缀的型号(走官方路由,稳定性更好)
+- `model_constraints` 里已经预置以上四个型号的尺寸约束;用户也可以自己加入其它兼容型号
+- 用户可在 `config.json` 的 `api.<provider>.model` 里自由切换;不强制按 phase 切换模型,运行时会通过 `--background auto`(默认)让模型自行决定输出形态,layer 阶段拿到的图无论是否带 alpha 都会被 `check_transparency.py` 兜底
+
 **选项呈现**：
 
 | 选项 | 行为 |

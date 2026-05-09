@@ -30,7 +30,7 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
-from config_loader import load_config, get_api_config, get_model_constraints
+from config_loader import load_config, get_api_config, get_model_constraints, get_phase_model
 
 
 # ---------------------------------------------------------------------------
@@ -69,21 +69,38 @@ def save_b64_image(b64_data: str, output_path: str):
 
 
 def _resolve_background(background: str | None, config_path: str | None, model: str) -> str | None:
-    """Resolve background parameter.
-
-    If the model's config explicitly sets supports_transparent_output to false,
-    the background parameter is always ignored to avoid upstream errors.
-    """
+    """Drop "transparent" if the model does not support it; pass "auto"/"opaque" through."""
+    if not background:
+        return None
+    if background != "transparent":
+        return background
     try:
         cfg = load_config(config_path)
         model_cfg = get_model_constraints(cfg, model)
         supports = model_cfg.get("supports_transparent_output", False)
     except Exception:
         supports = False
+    return "transparent" if supports else None
 
-    if not supports:
-        return None
-    return background
+
+def _check_size_allowed(size: str, config_path: str | None, model: str):
+    """Raise ValueError if the model has fixed allowed_sizes and the requested size is not in the list."""
+    try:
+        cfg = load_config(config_path)
+        model_cfg = get_model_constraints(cfg, model)
+        allowed_sizes = model_cfg.get("allowed_sizes")
+    except Exception:
+        return
+    if not allowed_sizes:
+        return
+    # Normalise size string (allow '*' as alias for 'x')
+    normalized = size.replace("*", "x").lower().strip()
+    if normalized not in [s.replace("*", "x").lower().strip() for s in allowed_sizes]:
+        raise ValueError(
+            f"Model '{model}' only supports fixed sizes: {', '.join(allowed_sizes)}. "
+            f"Requested size '{size}' is not allowed. "
+            f"PL (precise_layout) mode will fail because the canvas size does not match the model's constraints."
+        )
 
 
 def _extract_nested(data, path: str):
@@ -350,7 +367,6 @@ def _get_apimart_extras(config_path: str | None = None) -> dict:
     cfg = get_api_config(load_config(config_path))
     return {
         "official_fallback": cfg.get("official_fallback", False),
-        "prefer_official": cfg.get("prefer_official", True),
     }
 
 
@@ -363,10 +379,6 @@ def _text_to_image_async_task(prompt: str, output: str, size: str, quality: str,
     # apimart-specific: normalise asterisk to 'x'
     size = size.replace("*", "x")
 
-    # apimart-specific: prefer official model
-    if extras.get("prefer_official") and model == "gpt-image-2":
-        model = "gpt-image-2-official"
-
     payload = {
         "model": model,
         "prompt": prompt,
@@ -374,8 +386,9 @@ def _text_to_image_async_task(prompt: str, output: str, size: str, quality: str,
         "quality": quality,
         "n": n,
     }
-    if background:
-        payload["background"] = background
+    resolved_bg = _resolve_background(background, config_path, model)
+    if resolved_bg:
+        payload["background"] = resolved_bg
     if extras.get("official_fallback"):
         payload["official_fallback"] = True
 
@@ -413,10 +426,6 @@ def _image_to_image_async_task(image_paths: str | list[str], prompt: str, output
     # apimart-specific: normalise asterisk to 'x'
     size = size.replace("*", "x")
 
-    # apimart-specific: prefer official model
-    if extras.get("prefer_official") and model == "gpt-image-2":
-        model = "gpt-image-2-official"
-
     payload = {
         "model": model,
         "prompt": prompt,
@@ -425,8 +434,9 @@ def _image_to_image_async_task(image_paths: str | list[str], prompt: str, output
         "n": n,
         "image_urls": image_urls,
     }
-    if background:
-        payload["background"] = background
+    resolved_bg = _resolve_background(background, config_path, model)
+    if resolved_bg:
+        payload["background"] = resolved_bg
     if extras.get("official_fallback"):
         payload["official_fallback"] = True
 
@@ -441,6 +451,7 @@ def text_to_image(prompt: str, output: str, size: str = "1024x1024", quality: st
                   model: str = "gpt-image-2", n: int = 1, config_path: str | None = None,
                   background: str | None = None):
     """Generate image from text prompt."""
+    _check_size_allowed(size, config_path, model)
     ptype = _get_provider_type(config_path)
     if ptype == "async_task":
         return _text_to_image_async_task(prompt, output, size, quality, model, n, config_path, background)
@@ -453,6 +464,7 @@ def image_to_image(image_paths: str | list[str], prompt: str, output: str,
                    config_path: str | None = None,
                    background: str | None = None):
     """Generate image from existing image(s) + prompt (image-to-image)."""
+    _check_size_allowed(size, config_path, model)
     ptype = _get_provider_type(config_path)
     if ptype == "async_task":
         return _image_to_image_async_task(image_paths, prompt, output, size, quality, model, n, config_path, background)
@@ -474,10 +486,16 @@ def main():
     common.add_argument("--size", default="1024x1024", help="Image size (e.g., 1024x1024 or 16:9)")
     common.add_argument("--quality", default="low", choices=["low", "medium", "high", "auto"],
                         help="Generation quality")
-    common.add_argument("--model", default="gpt-image-2", help="Model name")
+    common.add_argument("--model", default=None,
+                        help="Model name. If omitted, resolves via --phase against api.<provider>.phase_models, "
+                             "or api.<provider>.default_model when --phase is also omitted.")
+    common.add_argument("--phase", choices=["preview", "layer", "variant"], default=None,
+                        help="Workflow phase role. Looks up the matching model in api.<provider>.phase_models. "
+                             "Ignored when --model is provided.")
     common.add_argument("--n", type=int, default=1, help="Number of images to generate")
     common.add_argument("--background", choices=["transparent", "opaque", "auto"],
-                        help="Background type (transparent for alpha channel PNG)")
+                        default="auto",
+                        help="Background type (default: auto, lets the model decide)")
 
     # Generate (text-to-image)
     gen_parser = subparsers.add_parser("generate", parents=[common], help="Text-to-image generation")
@@ -491,6 +509,16 @@ def main():
 
     args = parser.parse_args()
 
+    # Resolve model: explicit --model wins; else lookup via --phase + phase_models;
+    # else fall back to api.<provider>.default_model.
+    effective_model = args.model
+    if effective_model is None:
+        try:
+            cfg_for_lookup = load_config(args.config)
+            effective_model = get_phase_model(cfg_for_lookup, args.phase)
+        except Exception:
+            effective_model = "gpt-image-2"
+
     try:
         if args.command == "generate":
             paths = text_to_image(
@@ -498,7 +526,7 @@ def main():
                 output=args.output,
                 size=args.size,
                 quality=args.quality,
-                model=args.model,
+                model=effective_model,
                 n=args.n,
                 config_path=args.config,
                 background=args.background,
@@ -510,7 +538,7 @@ def main():
                 output=args.output,
                 size=args.size,
                 quality=args.quality,
-                model=args.model,
+                model=effective_model,
                 n=args.n,
                 config_path=args.config,
                 background=args.background,

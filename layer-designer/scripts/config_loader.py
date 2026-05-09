@@ -89,12 +89,16 @@ def get_api_config(config: dict) -> dict:
     provider_cfg = api.get(provider, {})
     merged = {**api, **provider_cfg}
 
+    # Backward-compat: older configs use "model"; new schema is "default_model".
+    default_model = merged.get("default_model", merged.get("model", "gpt-image-2"))
+
     return {
         "provider": provider,
         "provider_type": merged.get("provider_type", "openai"),
         "base_url": merged.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://your-api-gateway.com/v1")),
         "api_key": merged.get("api_key", os.environ.get("OPENAI_API_KEY", "your-key")),
-        "model": merged.get("model", "gpt-image-2"),
+        "default_model": default_model,
+        "phase_models": merged.get("phase_models", {}),
         "default_size": merged.get("default_size", "1024x1024"),
         "default_quality_low": merged.get("default_quality_low", "low"),
         "default_quality_medium": merged.get("default_quality_medium", "medium"),
@@ -102,9 +106,36 @@ def get_api_config(config: dict) -> dict:
         "default_n": merged.get("default_n", 1),
         "output_format": merged.get("output_format", "png"),
         "official_fallback": merged.get("official_fallback", False),
-        "prefer_official": merged.get("prefer_official", True),
         "async_config": merged.get("async_config", {}),
     }
+
+
+def get_phase_model(config: dict, role: str | None, fallback: str | None = None) -> str:
+    """Resolve the model name for a workflow phase role.
+
+    Reads `api.<active_provider>.phase_models[role]`; if missing, returns the
+    provider's `default_model`. `fallback` overrides both when provided (used
+    when callers pass an explicit `--model` flag).
+
+    Args:
+        config: Full configuration dictionary.
+        role: One of "preview", "layer", "variant" (or any custom key the user
+              defined under `phase_models`). Pass None to skip phase lookup
+              and go straight to default_model.
+        fallback: Optional override that takes precedence over the lookup.
+
+    Returns:
+        Model identifier string. Never empty — falls back to "gpt-image-2".
+    """
+    if fallback:
+        return fallback
+    api_cfg = get_api_config(config)
+    phase_models = api_cfg.get("phase_models", {}) or {}
+    if role:
+        picked = phase_models.get(role)
+        if picked:
+            return picked
+    return api_cfg.get("default_model") or "gpt-image-2"
 
 
 def get_workflow_config(config: dict) -> dict:
@@ -188,19 +219,33 @@ def get_matting_config(config: dict) -> dict:
 
 def get_model_constraints(config: dict, model_name: str | None = None) -> dict:
     """Extract model constraints for a specific model.
-    
+
+    Supports per-provider overrides under api.<provider>.model_constraints.
+    Provider-specific fields are merged on top of global model_constraints.
+
     Args:
         config: Full configuration dictionary.
         model_name: Model identifier (e.g., 'gpt-image-2'). If None, uses
-                    the model from api config.
-    
+                    the default_model from api config.
+
     Returns:
         Model constraint dictionary. Empty dict if model not found.
     """
     constraints = config.get("model_constraints", {})
+    api = config.get("api", {})
+    provider = api.get("provider", "openai")
+
     if model_name is None:
-        model_name = config.get("api", {}).get("model", "gpt-image-2")
-    return constraints.get(model_name, {})
+        # Backward-compat: older configs use "model"; new schema is "default_model".
+        model_name = api.get("default_model", api.get("model", "gpt-image-2"))
+
+    base = constraints.get(model_name, {})
+    provider_override = api.get(provider, {}).get("model_constraints", {}).get(model_name, {})
+
+    if provider_override:
+        merged = {**base, **provider_override}
+        return merged
+    return base
 
 
 if __name__ == "__main__":

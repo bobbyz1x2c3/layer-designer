@@ -5,10 +5,10 @@ Size validation and planning script for Layered Design Generator.
 Workflow phase where this script is invoked:
 - Phase 1 (Requirements): REQUIRED before any image generation. Validates user
   dimensions against model constraints, suggests nearest compliant alternatives,
-  computes early-phase vs full-phase sizes, and saves the plan for reuse.
+  computes early-phase vs full-phase dimensions, and saves the plan for reuse.
 
-Checks user-requested dimensions against gpt-image-2 model constraints.
-If non-compliant, suggests the nearest compliant size.
+Checks user-requested dimensions against model constraints (generic or fixed-size).
+If non-compliant, suggests the nearest compliant or allowed size.
 If compliant, computes both full-size and early-phase (downsized) dimensions.
 Saves the size plan to the project's workflow record for later reuse.
 
@@ -21,6 +21,9 @@ Usage:
 
     # With custom config
     python validate_size.py --config ../config.json --project my-dashboard --width 1024 --height 1024
+
+    # Validate against a specific model (e.g. gpt-image-1.5 with fixed sizes)
+    python validate_size.py --width 1920 --height 1080 --model gpt-image-1.5
 """
 
 import argparse
@@ -30,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 
 from path_manager import PathManager
+from config_loader import load_config, get_model_constraints
 
 
 def compute_nearest_compliant_size(
@@ -103,6 +107,42 @@ def compute_nearest_compliant_size(
     )
 
 
+def compute_nearest_allowed_size(
+    width: int,
+    height: int,
+    allowed_sizes: list[str],
+) -> tuple[str, int, int]:
+    """
+    Find the nearest allowed size for a model with fixed-size constraints.
+
+    Returns:
+        (size_str, w, h) of the closest match.
+    """
+    candidates = []
+    original_pixels = width * height
+    original_ratio = max(width, height) / min(width, height) if min(width, height) > 0 else 1.0
+
+    for size_str in allowed_sizes:
+        try:
+            sw, sh = size_str.split("x")
+            w, h = int(sw), int(sh)
+        except ValueError:
+            continue
+        pixels = w * h
+        ratio = max(w, h) / min(w, h)
+        ratio_diff = abs(ratio - original_ratio)
+        pixel_diff = abs(pixels - original_pixels)
+        dim_diff = abs(w - width) + abs(h - height)
+        candidates.append((ratio_diff, pixel_diff, dim_diff, size_str, w, h))
+
+    if not candidates:
+        return allowed_sizes[0], *map(int, allowed_sizes[0].split("x"))
+
+    candidates.sort()
+    _, _, _, size_str, w, h = candidates[0]
+    return size_str, w, h
+
+
 def check_compliance_issues(
     width: int,
     height: int,
@@ -140,12 +180,28 @@ def check_compliance_issues(
     return issues
 
 
+def check_allowed_size_issues(
+    width: int,
+    height: int,
+    allowed_sizes: list[str],
+) -> list[str]:
+    """Return issues when the requested size is not in the model's allowed sizes."""
+    issues = []
+    requested = f"{width}x{height}"
+    if requested not in allowed_sizes:
+        issues.append(
+            f"尺寸 {requested} 不在该模型支持的固定尺寸列表中: {', '.join(allowed_sizes)}"
+        )
+    return issues
+
+
 def validate_and_plan_size(
     width: int,
     height: int,
     project_name: str | None = None,
     config_path: str | None = None,
     downsize_ratio: float = 0.5,
+    model: str | None = None,
     max_edge: int = 3840,
     align: int = 16,
     max_ratio: float = 3.0,
@@ -174,50 +230,92 @@ def validate_and_plan_size(
         "saved_to": None,
     }
 
-    # --- 1. Check compliance of user input ---
-    issues = check_compliance_issues(
-        width, height, max_edge, align, max_ratio, min_pixels, max_pixels
-    )
+    # --- Load model constraints from config ---
+    allowed_sizes = None
+    if model:
+        try:
+            cfg = load_config(config_path) if config_path else load_config("config.json")
+            mcfg = get_model_constraints(cfg, model)
+            allowed_sizes = mcfg.get("allowed_sizes")
+        except Exception:
+            pass
 
-    if issues:
-        # Non-compliant: compute nearest compliant size for full size
-        compliant_w, compliant_h = compute_nearest_compliant_size(
-            width, height,
+    # --- 1. Check compliance ---
+    if allowed_sizes:
+        # Fixed-size model (e.g. gpt-image-1.5)
+        issues = check_allowed_size_issues(width, height, allowed_sizes)
+        if issues:
+            size_str, compliant_w, compliant_h = compute_nearest_allowed_size(
+                width, height, allowed_sizes
+            )
+            ratio = max(compliant_w, compliant_h) / min(compliant_w, compliant_h)
+            result["messages"] = [
+                f"[INVALID] 尺寸 {width}×{height} 不符合 {model} 的固定尺寸约束：",
+                *[f"  - {issue}" for issue in issues],
+                "",
+                f"[SUGGESTION] 建议的最接近合规尺寸：{compliant_w}×{compliant_h}",
+                f"   （宽高比 {ratio:.3f}，总像素 {compliant_w * compliant_h:,}）",
+                "",
+                "请确认使用建议尺寸，或提供其他尺寸。",
+            ]
+            result["full_size"] = {"width": compliant_w, "height": compliant_h}
+        else:
+            ratio = max(width, height) / min(width, height)
+            result["valid"] = True
+            result["messages"] = [
+                f"[VALID] 尺寸 {width}×{height} 符合 {model} 的固定尺寸约束。"
+                f"   （总像素 {width * height:,}，宽高比 {ratio:.3f}）",
+            ]
+            result["full_size"] = {"width": width, "height": height}
+
+        # Fixed-size models do not support downsizing; early_size == full_size
+        fw, fh = result["full_size"]["width"], result["full_size"]["height"]
+        result["early_size"] = {"width": fw, "height": fh}
+    else:
+        # Generic model constraints
+        issues = check_compliance_issues(
+            width, height, max_edge, align, max_ratio, min_pixels, max_pixels
+        )
+
+        if issues:
+            # Non-compliant: compute nearest compliant size for full size
+            compliant_w, compliant_h = compute_nearest_compliant_size(
+                width, height,
+                max_edge=max_edge, align=align, max_ratio=max_ratio,
+                min_pixels=min_pixels, max_pixels=max_pixels,
+            )
+
+            ratio = max(compliant_w, compliant_h) / min(compliant_w, compliant_h)
+            result["messages"] = [
+                f"[INVALID] 尺寸 {width}×{height} 不符合 gpt-image-2 约束：",
+                *[f"  - {issue}" for issue in issues],
+                "",
+                f"[SUGGESTION] 建议的最接近合规尺寸：{compliant_w}×{compliant_h}",
+                f"   （宽高比 {ratio:.3f}，总像素 {compliant_w * compliant_h:,}）",
+                "",
+                "请确认使用建议尺寸，或提供其他尺寸。",
+            ]
+            result["full_size"] = {"width": compliant_w, "height": compliant_h}
+        else:
+            # Compliant
+            ratio = max(width, height) / min(width, height)
+            result["valid"] = True
+            result["messages"] = [
+                f"[VALID] 尺寸 {width}×{height} 符合 gpt-image-2 约束。"
+                f"   （总像素 {width * height:,}，宽高比 {ratio:.3f}）",
+            ]
+            result["full_size"] = {"width": width, "height": height}
+
+        # --- 2. Compute early-phase size from the FULL size ---
+        fw, fh = result["full_size"]["width"], result["full_size"]["height"]
+        early_w, early_h = PathManager.compute_early_phase_size(
+            fw, fh,
+            downsize_ratio=downsize_ratio,
+            threshold_w=300, threshold_h=200, threshold_pixels=60000,
             max_edge=max_edge, align=align, max_ratio=max_ratio,
             min_pixels=min_pixels, max_pixels=max_pixels,
         )
-
-        ratio = max(compliant_w, compliant_h) / min(compliant_w, compliant_h)
-        result["messages"] = [
-            f"[INVALID] 尺寸 {width}×{height} 不符合 gpt-image-2 约束：",
-            *[f"  - {issue}" for issue in issues],
-            "",
-            f"[SUGGESTION] 建议的最接近合规尺寸：{compliant_w}×{compliant_h}",
-            f"   （宽高比 {ratio:.3f}，总像素 {compliant_w * compliant_h:,}）",
-            "",
-            "请确认使用建议尺寸，或提供其他尺寸。",
-        ]
-        result["full_size"] = {"width": compliant_w, "height": compliant_h}
-    else:
-        # Compliant
-        ratio = max(width, height) / min(width, height)
-        result["valid"] = True
-        result["messages"] = [
-            f"[VALID] 尺寸 {width}×{height} 符合 gpt-image-2 约束。"
-            f"   （总像素 {width * height:,}，宽高比 {ratio:.3f}）",
-        ]
-        result["full_size"] = {"width": width, "height": height}
-
-    # --- 2. Compute early-phase size from the FULL size ---
-    fw, fh = result["full_size"]["width"], result["full_size"]["height"]
-    early_w, early_h = PathManager.compute_early_phase_size(
-        fw, fh,
-        downsize_ratio=downsize_ratio,
-        threshold_w=300, threshold_h=200, threshold_pixels=60000,
-        max_edge=max_edge, align=align, max_ratio=max_ratio,
-        min_pixels=min_pixels, max_pixels=max_pixels,
-    )
-    result["early_size"] = {"width": early_w, "height": early_h}
+        result["early_size"] = {"width": early_w, "height": early_h}
 
     # --- 3. Save to project record ---
     if project_name:
@@ -260,6 +358,8 @@ def main():
     parser.add_argument("--height", "-H", type=int, required=True, help="Requested height in pixels")
     parser.add_argument("--downsize-ratio", "-d", type=float, default=0.5,
                         help="Early-phase downsize ratio (0.0–1.0). Default 0.5. Use 0.775 for high-quality preview mode (~60% area).")
+    parser.add_argument("--model", "-m", default=None,
+                        help="Target model name (e.g. gpt-image-1.5). If provided, validates against model-specific constraints such as allowed_sizes.")
     args = parser.parse_args()
 
     result = validate_and_plan_size(
@@ -268,6 +368,7 @@ def main():
         project_name=args.project,
         config_path=args.config,
         downsize_ratio=args.downsize_ratio,
+        model=args.model,
     )
 
     print(format_output(result))

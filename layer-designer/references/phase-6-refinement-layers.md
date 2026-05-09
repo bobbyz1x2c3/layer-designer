@@ -76,7 +76,7 @@ python scripts/generate_image.py edit \
   --config config.json \
   --image {high_quality_preview} \
   --prompt "Extract ONLY the {layer_name}. {description}. High quality, polished, transparent background, isolated element. {style_anchor}. CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. Scale the element proportionally to fit within the canvas while leaving a small transparent margin of approximately 3-5% on each side. Do NOT let the element touch or overlap the canvas boundary. This margin ensures clean background removal in post-processing." \
-  --output {final_layer_path} --size {layer_w}x{layer_h} --quality {tier}
+  --output {final_layer_path} --size {layer_w}x{layer_h} --quality {tier} --phase layer
 ```
 
 - `size`: per-layer compliant size from `compute_layer_size()`
@@ -92,7 +92,7 @@ python scripts/generate_image.py edit \
   --config config.json \
   --image {high_quality_preview} \
   --prompt "From this UI design, extract ONLY the background layer. Include: {background_description}. Full canvas filled completely. NO transparent areas. NO UI elements, NO buttons, NO text, NO icons, NO overlays. Only the pure background fill, texture, gradient, or environment. {style_anchor}." \
-  --output {final_layer_path} --size {full_w}x{full_h} --quality {tier}
+  --output {final_layer_path} --size {full_w}x{full_h} --quality {tier} --phase layer
 ```
 
 - `size`: full canvas `full_size` from `size_plan.json` (do NOT use `compute_layer_size()`)
@@ -155,7 +155,7 @@ python scripts/generate_image.py edit \
   --config config.json \
   --image {high_quality_preview} \
   --prompt "{layer_prompt}" \
-  --output {final_layer_path} --size {layer_w}x{layer_h} --quality {tier} \
+  --output {final_layer_path} --size {layer_w}x{layer_h} --quality {tier} --phase layer \
   --no-wait
 ```
 

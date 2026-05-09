@@ -119,7 +119,11 @@ def main():
             if args.states is None:
                 args.states = vcfg.get("default_states", ["hover", "active", "disabled"])
             if args.model == "gpt-image-2":
-                args.model = acfg.get("model", "gpt-image-2")
+                args.model = acfg.get("default_model", "gpt-image-2")
+                phase_models = acfg.get("phase_models") or {}
+                phase_pick = phase_models.get("variant")
+                if phase_pick:
+                    args.model = phase_pick
         except Exception:
             if args.control_type is None:
                 args.control_type = "generic"

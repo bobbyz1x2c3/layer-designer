@@ -192,7 +192,7 @@ After validation succeeds, read `01-requirements/size_plan.json` to obtain:
 python scripts/generate_image.py generate \
   --config config.json \
   --prompt "{overall composition + style + key elements}" \
-  --output {preview_path} --size {early_w}x{early_h} --quality {preview_quality}
+  --output {preview_path} --size {early_w}x{early_h} --quality {preview_quality} --phase preview
 ```
 
 - **Standard**: Invoke 3 times (or once with `--n 3` if API supports it)
@@ -210,7 +210,7 @@ python scripts/generate_image.py edit \
   --config config.json \
   --image {reference_image_path} \
   --prompt "{reference interpretation + refinement prompt}" \
-  --output {preview_path} --size {early_w}x{early_h} --quality {preview_quality}
+  --output {preview_path} --size {early_w}x{early_h} --quality {preview_quality} --phase preview
 ```
 
 - **Standard**: Invoke 3 times
@@ -246,7 +246,7 @@ If user requests changes (NOT "OK"):
      --config config.json \
      --image {selected_preview_path} \
      --prompt "Based on this UI design, modify: {user's change requests}. Keep the overall layout and style consistent. {style_anchor if already extracted}." \
-     --output {revised_preview_path} --size {early_w}x{early_h} --quality {preview_quality}
+     --output {revised_preview_path} --size {early_w}x{early_h} --quality {preview_quality} --phase preview
    ```
    - **Default**: Use the selected preview as base
    - **Major structural changes only**: May use the original reference image as base instead
@@ -272,7 +272,7 @@ If user requests changes (NOT "OK"):
      --config config.json \
      --image {confirmed_preview_path} \
      --prompt "Based on this UI design, modify: {user's change requests}. Keep the overall layout and style consistent. {style_anchor}." \
-     --output {revised_preview_path} --size {early_w}x{early_h} --quality {preview_quality}
+     --output {revised_preview_path} --size {early_w}x{early_h} --quality {preview_quality} --phase preview
    ```
 3. Present the revised preview and ask for confirmation
 4. Revisions are unlimited. If user repeatedly asks for major changes, suggest switching to standard mode.
