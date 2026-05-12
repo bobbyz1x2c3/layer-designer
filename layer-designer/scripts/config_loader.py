@@ -66,30 +66,70 @@ def load_config(config_path: str | None = None) -> dict:
     return _deep_resolve(raw)
 
 
+def _resolve_default_provider(config: dict) -> str:
+    """Pick the default provider name. New schema: api.default_provider; legacy: api.provider."""
+    api = config.get("api", {})
+    return api.get("default_provider") or api.get("provider") or "openai"
+
+
+def _get_provider_block(config: dict, provider: str) -> dict:
+    """Read a provider's config block. New schema: api.providers.<name>; legacy: api.<name>."""
+    api = config.get("api", {})
+    providers = api.get("providers")
+    if isinstance(providers, dict) and isinstance(providers.get(provider), dict):
+        return providers[provider]
+    block = api.get(provider)
+    if isinstance(block, dict):
+        return block
+    return {}
+
+
 def get_api_config(config: dict) -> dict:
-    """Extract API-related config with sensible fallbacks.
+    """Extract API-related config for the default provider.
 
-    Supports per-provider grouped config under api.<provider> while
-    remaining backward-compatible with flat (legacy) config.
-
-    Example (new grouped style):
+    New schema:
         "api": {
-            "provider": "apimart",
-            "openai": { "base_url": "...", "api_key": "..." },
-            "apimart": { "base_url": "...", "api_key": "...", "official_fallback": false }
+            "default_provider": "openai",
+            "phase_models": {                              # top-level
+                "preview": "openai/gpt-image-2",
+                "layer": "apimart/gpt-image-1.5-official"
+            },
+            "providers": {
+                "openai":  { "provider_type": "openai", "base_url": "...", "api_key": "..." },
+                "apimart": { "provider_type": "async_task", "base_url": "...", ... }
+            }
         }
 
-    Example (legacy flat style):
-        "api": { "provider": "openai", "base_url": "...", "api_key": "..." }
+    Legacy schema (still supported by the loader; migrate via migrate_config.py):
+        "api": {
+            "provider": "openai",
+            "openai":  { "base_url": "...", "api_key": "...", "phase_models": {...} },
+            "apimart": { "base_url": "...", "api_key": "...", "async_config": {...} }
+        }
+    """
+    provider = _resolve_default_provider(config)
+    cfg = get_provider_api_config(config, provider)
+    api = config.get("api", {})
+    cfg["phase_models"] = api.get("phase_models", _get_provider_block(config, provider).get("phase_models", {}))
+    return cfg
+
+
+def get_provider_api_config(config: dict, provider: str) -> dict:
+    """Extract API config for a SPECIFIC provider, regardless of the default.
+
+    Used when phase_models routes a phase to a non-default provider — we still
+    need that provider's credentials, base_url, async_config, and any
+    provider-specific model constraints.
     """
     api = config.get("api", {})
-    provider = api.get("provider", "openai")
+    provider_cfg = _get_provider_block(config, provider)
 
-    # If a provider-specific block exists, merge it on top of the flat defaults.
-    provider_cfg = api.get(provider, {})
+    # Top-level api defaults still apply (legacy flat schema support)
     merged = {**api, **provider_cfg}
+    # Strip api-level metadata + provider container keys
+    for k in ("provider", "default_provider", "phase_models", "providers", "openai", "apimart"):
+        merged.pop(k, None)
 
-    # Backward-compat: older configs use "model"; new schema is "default_model".
     default_model = merged.get("default_model", merged.get("model", "gpt-image-2"))
 
     return {
@@ -98,7 +138,6 @@ def get_api_config(config: dict) -> dict:
         "base_url": merged.get("base_url", os.environ.get("OPENAI_BASE_URL", "https://your-api-gateway.com/v1")),
         "api_key": merged.get("api_key", os.environ.get("OPENAI_API_KEY", "your-key")),
         "default_model": default_model,
-        "phase_models": merged.get("phase_models", {}),
         "default_size": merged.get("default_size", "1024x1024"),
         "default_quality_low": merged.get("default_quality_low", "low"),
         "default_quality_medium": merged.get("default_quality_medium", "medium"),
@@ -107,35 +146,63 @@ def get_api_config(config: dict) -> dict:
         "output_format": merged.get("output_format", "png"),
         "official_fallback": merged.get("official_fallback", False),
         "async_config": merged.get("async_config", {}),
+        "model_constraints": merged.get("model_constraints", {}),
     }
 
 
-def get_phase_model(config: dict, role: str | None, fallback: str | None = None) -> str:
-    """Resolve the model name for a workflow phase role.
+def parse_model_spec(spec: str | None, default_provider: str = "openai") -> tuple[str, str]:
+    """Parse a phase_models value or --model argument into (provider, model).
 
-    Reads `api.<active_provider>.phase_models[role]`; if missing, returns the
-    provider's `default_model`. `fallback` overrides both when provided (used
-    when callers pass an explicit `--model` flag).
+    Accepts:
+        "openai/gpt-image-2"   -> ("openai", "gpt-image-2")
+        "apimart/gpt-image-1.5-official" -> ("apimart", "gpt-image-1.5-official")
+        "gpt-image-2"          -> (default_provider, "gpt-image-2")
+        None / ""              -> (default_provider, "gpt-image-2")
+    """
+    if not spec:
+        return default_provider, "gpt-image-2"
+    spec = spec.strip()
+    if "/" in spec:
+        prov, _, mdl = spec.partition("/")
+        prov = prov.strip()
+        mdl = mdl.strip()
+        if prov and mdl:
+            return prov, mdl
+    return default_provider, spec
+
+
+def get_phase_model(config: dict, role: str | None, fallback: str | None = None) -> str:
+    """Resolve the model spec for a workflow phase role.
+
+    Reads `api.phase_models[role]` (new top-level schema). Legacy fallback is
+    `api.<default_provider>.phase_models[role]`. Final fallback is the default
+    provider's `default_model`. `fallback` overrides everything when provided
+    (used when callers pass an explicit `--model` flag).
+
+    Returns a spec string that may be either:
+        - "<provider>/<model>" (cross-provider routing)
+        - "<model>" (resolved against the default provider)
 
     Args:
         config: Full configuration dictionary.
         role: One of "preview", "layer", "variant" (or any custom key the user
-              defined under `phase_models`). Pass None to skip phase lookup
-              and go straight to default_model.
+              defined under `phase_models`). Pass None to skip phase lookup.
         fallback: Optional override that takes precedence over the lookup.
 
     Returns:
-        Model identifier string. Never empty — falls back to "gpt-image-2".
+        Model spec string. Never empty — falls back to "gpt-image-2".
     """
     if fallback:
         return fallback
-    api_cfg = get_api_config(config)
-    phase_models = api_cfg.get("phase_models", {}) or {}
-    if role:
-        picked = phase_models.get(role)
-        if picked:
-            return picked
-    return api_cfg.get("default_model") or "gpt-image-2"
+    api = config.get("api", {})
+    top_phase_models = api.get("phase_models", {}) or {}
+    if role and top_phase_models.get(role):
+        return top_phase_models[role]
+    provider = _resolve_default_provider(config)
+    legacy_phase_models = _get_provider_block(config, provider).get("phase_models", {}) or {}
+    if role and legacy_phase_models.get(role):
+        return legacy_phase_models[role]
+    return get_provider_api_config(config, provider).get("default_model") or "gpt-image-2"
 
 
 def get_workflow_config(config: dict) -> dict:
@@ -217,34 +284,35 @@ def get_matting_config(config: dict) -> dict:
     }
 
 
-def get_model_constraints(config: dict, model_name: str | None = None) -> dict:
+def get_model_constraints(config: dict, model_name: str | None = None,
+                          provider: str | None = None) -> dict:
     """Extract model constraints for a specific model.
 
-    Supports per-provider overrides under api.<provider>.model_constraints.
-    Provider-specific fields are merged on top of global model_constraints.
+    Per-provider overrides live under api.providers.<provider>.model_constraints
+    (new schema) or api.<provider>.model_constraints (legacy). Provider-specific
+    fields are merged on top of the global model_constraints block.
 
     Args:
         config: Full configuration dictionary.
-        model_name: Model identifier (e.g., 'gpt-image-2'). If None, uses
-                    the default_model from api config.
+        model_name: Model identifier (e.g., 'gpt-image-2'). If None, uses the
+                    provider's default_model.
+        provider: Provider name (e.g., 'openai', 'apimart'). If None, uses the
+                  configured default provider.
 
     Returns:
-        Model constraint dictionary. Empty dict if model not found.
+        Model constraint dictionary. Empty dict if model not found anywhere.
     """
     constraints = config.get("model_constraints", {})
-    api = config.get("api", {})
-    provider = api.get("provider", "openai")
-
+    if provider is None:
+        provider = _resolve_default_provider(config)
     if model_name is None:
-        # Backward-compat: older configs use "model"; new schema is "default_model".
-        model_name = api.get("default_model", api.get("model", "gpt-image-2"))
+        model_name = get_provider_api_config(config, provider).get("default_model") or "gpt-image-2"
 
     base = constraints.get(model_name, {})
-    provider_override = api.get(provider, {}).get("model_constraints", {}).get(model_name, {})
+    provider_override = _get_provider_block(config, provider).get("model_constraints", {}).get(model_name, {})
 
     if provider_override:
-        merged = {**base, **provider_override}
-        return merged
+        return {**base, **provider_override}
     return base
 
 

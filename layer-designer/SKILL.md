@@ -17,7 +17,7 @@ When the user says **"开始部署"**, **"开始安装"**, or asks how to set up
 2. Follow the interactive setup flow in that document — do NOT silently run `setup.py` without user interaction.
 
 Key interaction points:
-- Ask about API configuration (provider, base_url, api_key, default_model, phase_models)
+- Ask about API configuration (default_provider, providers list, each provider's base_url + api_key + default_model, top-level phase_models in `provider/model` form)
 - Ask which matting model to use (`u2net`, `birefnet-general`, etc.) with size/quality trade-offs
 - If the user communicates in Chinese, explicitly ask whether to use a download mirror (e.g. `https://github.tbedu.top`)
 - Install dependencies; **model download is skipped by default** — use `--download` to fetch, or `link` to use an existing file
@@ -69,7 +69,7 @@ Single source of truth. Key sections:
 
 | Section | Key Fields |
 |---------|-----------|
-| `api` | `provider`, `provider_type`, `base_url`, `api_key`, `default_model` (default `gpt-image-2`), `phase_models` (`preview`/`layer`/`variant`) |
+| `api` | `default_provider`, `phase_models` (top-level, values are `provider/model`), `providers.<name>` blocks containing `provider_type`, `base_url`, `api_key`, `default_model` (default `gpt-image-2`) |
 | `model_constraints.gpt-image-2` | `max_edge: 3840`, `align: 16`, `max_ratio: 3.0`, `min_pixels: 655360`, `max_pixels: 8294400` |
 | `workflow` | `downsize_early_phases`, `quality_adaptive`, `fast_workflow`, `parallel_generation`, `parallel_max_workers` |
 | `paths` | `output_root`, `references_dir`, `output_dir` |

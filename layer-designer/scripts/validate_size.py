@@ -33,7 +33,12 @@ from datetime import datetime
 from pathlib import Path
 
 from path_manager import PathManager
-from config_loader import load_config, get_model_constraints
+from config_loader import (
+    load_config,
+    get_model_constraints,
+    parse_model_spec,
+    _resolve_default_provider,
+)
 
 
 def compute_nearest_compliant_size(
@@ -232,10 +237,15 @@ def validate_and_plan_size(
 
     # --- Load model constraints from config ---
     allowed_sizes = None
+    resolved_model = model
     if model:
         try:
             cfg = load_config(config_path) if config_path else load_config("config.json")
-            mcfg = get_model_constraints(cfg, model)
+            # Accept either "gpt-image-1.5" or "apimart/gpt-image-1.5"
+            default_provider = _resolve_default_provider(cfg)
+            provider, actual_model = parse_model_spec(model, default_provider)
+            resolved_model = actual_model
+            mcfg = get_model_constraints(cfg, actual_model, provider=provider)
             allowed_sizes = mcfg.get("allowed_sizes")
         except Exception:
             pass
@@ -359,7 +369,9 @@ def main():
     parser.add_argument("--downsize-ratio", "-d", type=float, default=0.5,
                         help="Early-phase downsize ratio (0.0–1.0). Default 0.5. Use 0.775 for high-quality preview mode (~60% area).")
     parser.add_argument("--model", "-m", default=None,
-                        help="Target model name (e.g. gpt-image-1.5). If provided, validates against model-specific constraints such as allowed_sizes.")
+                        help="Target model spec, plain ('gpt-image-1.5') or qualified ('apimart/gpt-image-1.5'). "
+                             "If provided, validates against model-specific constraints such as allowed_sizes, "
+                             "honouring per-provider overrides.")
     args = parser.parse_args()
 
     result = validate_and_plan_size(

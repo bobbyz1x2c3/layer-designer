@@ -11,9 +11,13 @@ Usage:
 
 Behavior:
     1. Reads existing config.json (preserves user values like api_key)
-    2. Reads config.example.json as the schema template
-    3. Deep-merges: user values win, missing keys are filled from template
-    4. Applies known renames (e.g. "model" -> "default_model")
+    2. Migrates schema shape:
+       - api.provider -> api.default_provider
+       - api.{openai, apimart} -> api.providers.{openai, apimart}
+       - active provider's phase_models -> top-level api.phase_models with
+         "provider/model" qualified values
+    3. Deep-merges with config.example.json template (user values win)
+    4. Applies known field renames (e.g. "model" -> "default_model")
     5. Writes back to config.json (or prints diff in dry-run mode)
 """
 
@@ -35,6 +39,63 @@ def _get_project_version(config_file: Path) -> str | None:
     return m.group(1) if m else None
 
 
+def _migrate_api_schema(cfg: dict) -> dict:
+    """Lift legacy api.<provider> blocks under api.providers.<name>, rename
+    provider→default_provider, and hoist the active provider's phase_models to
+    a top-level api.phase_models with `provider/model` qualified values.
+
+    Idempotent: if the new shape is already in place, this is a no-op.
+    """
+    api = cfg.get("api")
+    if not isinstance(api, dict):
+        return cfg
+
+    # 1. provider -> default_provider
+    if "provider" in api and "default_provider" not in api:
+        api["default_provider"] = api.pop("provider")
+        print("[MIGRATE] api.provider -> api.default_provider")
+
+    # 2. Move api.<known-provider> -> api.providers.<name>
+    providers = api.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+
+    moved = []
+    for legacy_key in ("openai", "apimart"):
+        block = api.get(legacy_key)
+        if isinstance(block, dict):
+            # Don't clobber if already under providers
+            providers.setdefault(legacy_key, block)
+            api.pop(legacy_key, None)
+            moved.append(legacy_key)
+    if moved:
+        print(f"[MIGRATE] api.{{ {', '.join(moved)} }} -> api.providers.*")
+
+    if providers:
+        api["providers"] = providers
+
+    # 3. Hoist phase_models from the active provider's block to top-level
+    if not isinstance(api.get("phase_models"), dict) or not api.get("phase_models"):
+        active = api.get("default_provider") or "openai"
+        active_block = providers.get(active) if isinstance(providers, dict) else None
+        if isinstance(active_block, dict):
+            legacy_pm = active_block.get("phase_models")
+            if isinstance(legacy_pm, dict) and legacy_pm:
+                api["phase_models"] = {
+                    role: f"{active}/{model}" for role, model in legacy_pm.items()
+                }
+                print(f"[MIGRATE] api.providers.{active}.phase_models -> api.phase_models (qualified)")
+
+    # 4. Drop phase_models from each provider block (now lives top-level)
+    if isinstance(api.get("providers"), dict):
+        for prov_block in api["providers"].values():
+            if isinstance(prov_block, dict):
+                prov_block.pop("phase_models", None)
+
+    cfg["api"] = api
+    return cfg
+
+
 def _deep_merge(base: dict, template: dict, path: str = "") -> dict:
     """Recursively merge template into base. Base values are preserved."""
     result = deepcopy(base)
@@ -48,10 +109,12 @@ def _deep_merge(base: dict, template: dict, path: str = "") -> dict:
 
 
 def _apply_renames(cfg: dict) -> dict:
-    """Apply known field renames while preserving old values as fallback."""
+    """Apply known field renames inside provider blocks."""
     api = cfg.get("api", {})
-    for provider in ["openai", "apimart"]:
-        block = api.get(provider)
+    providers = api.get("providers", {}) if isinstance(api, dict) else {}
+    if not isinstance(providers, dict):
+        return cfg
+    for block in providers.values():
         if not isinstance(block, dict):
             continue
         # model -> default_model
@@ -80,6 +143,10 @@ def migrate(config_path: str, dry_run: bool = False) -> dict:
 
     # Remove template-only metadata before merging
     template.pop("_comment", None)
+
+    # Schema migration must precede deep_merge — otherwise legacy api.<provider>
+    # blocks would coexist with the template's api.providers.<provider> blocks.
+    user_cfg = _migrate_api_schema(user_cfg)
 
     merged = _deep_merge(user_cfg, template)
     merged = _apply_renames(merged)

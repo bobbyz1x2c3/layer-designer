@@ -54,7 +54,7 @@ python scripts/generate_variants.py \
   --output-dir {variant_dir} --size {control_w}x{control_h} --quality high
 ```
 
-> `generate_variants.py` automatically resolves the model from `api.<provider>.phase_models.variant`, falling back to `default_model`. Pass `--model <name>` only when you need to override the configured choice.
+> `generate_variants.py` automatically resolves the model from `api.phase_models.variant`, falling back to the default provider's `default_model`. Pass `--model <spec>` (plain or `provider/model`) only when you need to override the configured choice.
 
 > For **repeat-mode controls**: `{control_layer.png}` is the **parent layer** (e.g., `06-refinement-layers/product_card/product_card_xxx.png`). All instances automatically share the same state variants because they all reference the parent's PNG in `enhanced_layer_plan.json`.
 

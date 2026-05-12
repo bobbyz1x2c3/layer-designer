@@ -22,9 +22,9 @@ These are the exact commands verified against the configured API endpoint (`conf
 
 `generate_image.py` resolves the model in this order:
 
-1. Explicit `--model <name>` — always wins.
-2. `--phase {preview|layer|variant}` — looks up `api.<provider>.phase_models[phase]` in `config.json`. Recommended for workflow phases.
-3. Neither flag — falls through to `api.<provider>.default_model`.
+1. Explicit `--model <spec>` — always wins. Accepts plain (`gpt-image-2`) or qualified (`apimart/gpt-image-1.5-official`) form.
+2. `--phase {preview|layer|variant}` — looks up `api.phase_models[phase]` in `config.json`. Values are `provider/model` strings, so different phases can target different providers. Recommended for workflow phases.
+3. Neither flag — falls through to the default provider's `default_model` under `api.providers.<default_provider>.default_model`.
 
 Phase-to-role mapping used by the workflow:
 

@@ -1,61 +1,58 @@
 {
-  "_comment": "Layered Design Generator configuration. Copy this file to config.json and fill in your API key. Environment variables like ${OPENAI_API_KEY} are resolved at runtime. Provider can be 'openai' (default) or 'apimart'.",
+  "_comment": "Layered Design Generator configuration. Copy this file to config.json and fill in your API key. Environment variables like ${OPENAI_API_KEY} are resolved at runtime. Set api.default_provider to one of the keys under api.providers. Each entry in api.phase_models is a 'provider/model' spec so any phase can route to any provider.",
   "config_version": "0.3.1-dev",
   "download_mirror": "",
   "api": {
-    "provider": "openai",
-    "openai": {
-      "provider_type": "openai",
-      "base_url": "http://your-endpoint-ip:8081/v1",
-      "api_key": "${OPENAI_API_KEY}",
-      "default_model": "gpt-image-2",
-      "default_size": "1024x1024",
-      "default_quality_low": "low",
-      "default_quality_medium": "medium",
-      "default_quality_high": "high",
-      "default_n": 1,
-      "output_format": "png",
-      "phase_models": {
-        "preview": "gpt-image-2",
-        "layer": "gpt-image-1.5",
-        "variant": "gpt-image-1.5"
-      }
+    "default_provider": "openai",
+    "phase_models": {
+      "preview": "openai/gpt-image-2",
+      "layer": "openai/gpt-image-1.5",
+      "variant": "openai/gpt-image-1.5"
     },
-    "apimart": {
-      "provider_type": "async_task",
-      "base_url": "https://api.apimart.ai/v1",
-      "api_key": "${APIMART_API_KEY}",
-      "default_model": "gpt-image-2",
-      "default_size": "1024x1024",
-      "default_quality_low": "low",
-      "default_quality_medium": "medium",
-      "default_quality_high": "high",
-      "default_n": 1,
-      "output_format": "png",
-      "official_fallback": false,
-      "phase_models": {
-        "preview": "gpt-image-2-official",
-        "layer": "gpt-image-1.5-official",
-        "variant": "gpt-image-1.5-official"
+    "providers": {
+      "openai": {
+        "provider_type": "openai",
+        "base_url": "http://your-endpoint-ip:8081/v1",
+        "api_key": "${OPENAI_API_KEY}",
+        "default_model": "gpt-image-2",
+        "default_size": "1024x1024",
+        "default_quality_low": "low",
+        "default_quality_medium": "medium",
+        "default_quality_high": "high",
+        "default_n": 1,
+        "output_format": "png"
       },
-      "model_constraints": {
-        "gpt-image-2": {
-          "supports_transparent_output": true
+      "apimart": {
+        "provider_type": "async_task",
+        "base_url": "https://api.apimart.ai/v1",
+        "api_key": "${APIMART_API_KEY}",
+        "default_model": "gpt-image-2",
+        "default_size": "1024x1024",
+        "default_quality_low": "low",
+        "default_quality_medium": "medium",
+        "default_quality_high": "high",
+        "default_n": 1,
+        "output_format": "png",
+        "official_fallback": false,
+        "model_constraints": {
+          "gpt-image-2": {
+            "supports_transparent_output": true
+          }
+        },
+        "async_config": {
+          "submit_path": "/images/generations",
+          "poll_path_template": "/tasks/{task_id}",
+          "task_id_extractor": "data.0.task_id",
+          "status_extractor": "data.status",
+          "progress_extractor": "data.progress",
+          "image_urls_extractor": "data.result.images",
+          "url_field": "url",
+          "completed_status": "completed",
+          "failed_statuses": ["failed", "error"],
+          "initial_delay": 10,
+          "poll_interval": 5,
+          "timeout": 180
         }
-      },
-      "async_config": {
-        "submit_path": "/images/generations",
-        "poll_path_template": "/tasks/{task_id}",
-        "task_id_extractor": "data.0.task_id",
-        "status_extractor": "data.status",
-        "progress_extractor": "data.progress",
-        "image_urls_extractor": "data.result.images",
-        "url_field": "url",
-        "completed_status": "completed",
-        "failed_statuses": ["failed", "error"],
-        "initial_delay": 10,
-        "poll_interval": 5,
-        "timeout": 180
       }
     }
   },

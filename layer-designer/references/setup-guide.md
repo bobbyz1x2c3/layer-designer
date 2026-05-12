@@ -44,7 +44,7 @@ assert sys.version_info >= (3, 9), "Python 3.9+ required"
 
 - 用 **apimart** provider 的用户应选带 `-official` 后缀的型号(走官方路由,稳定性更好)
 - `model_constraints` 里已经预置以上四个型号的尺寸约束;用户也可以自己加入其它兼容型号
-- 用户可在 `config.json` 的 `api.<provider>.model` 里自由切换;不强制按 phase 切换模型,运行时会通过 `--background auto`(默认)让模型自行决定输出形态,layer 阶段拿到的图无论是否带 alpha 都会被 `check_transparency.py` 兜底
+- 用户可在 `config.json` 的 `api.providers.<name>.default_model` 里设置每个 provider 的默认模型;按 phase 混用 provider/模型则在 `api.phase_models` 里写 `provider/model` 形式(例如 `"layer": "apimart/gpt-image-1.5-official"`)。运行时会通过 `--background auto`(默认)让模型自行决定输出形态,layer 阶段拿到的图无论是否带 alpha 都会被 `check_transparency.py` 兜底
 
 **选项呈现**：
 

@@ -30,29 +30,34 @@ import time
 from contextlib import ExitStack
 from pathlib import Path
 
-from config_loader import load_config, get_api_config, get_model_constraints, get_phase_model
+from config_loader import (
+    load_config,
+    get_api_config,
+    get_provider_api_config,
+    get_model_constraints,
+    get_phase_model,
+    parse_model_spec,
+)
 
 
 # ---------------------------------------------------------------------------
-# Provider detection
+# Provider resolution
 # ---------------------------------------------------------------------------
 
-def _get_provider(config_path: str | None = None) -> str:
-    """Detect provider name from config. Defaults to 'openai'."""
+def _resolve_default_provider(config_path: str | None = None) -> str:
+    """Read the default provider name from config (api.default_provider, legacy api.provider)."""
     try:
-        cfg = get_api_config(load_config(config_path))
-        return cfg.get("provider", "openai").lower()
+        return get_api_config(load_config(config_path)).get("provider", "openai").lower()
     except Exception:
         return "openai"
 
 
-def _get_provider_type(config_path: str | None = None) -> str:
-    """Detect provider_type from config. Defaults to 'openai'."""
+def _provider_cfg(config_path: str | None, provider: str) -> dict:
+    """Get the API config block for a SPECIFIC provider, regardless of default."""
     try:
-        cfg = get_api_config(load_config(config_path))
-        return cfg.get("provider_type", "openai").lower()
+        return get_provider_api_config(load_config(config_path), provider)
     except Exception:
-        return "openai"
+        return {"provider": provider, "provider_type": "openai", "base_url": "", "api_key": "", "async_config": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -68,36 +73,36 @@ def save_b64_image(b64_data: str, output_path: str):
     return output_path
 
 
-def _resolve_background(background: str | None, config_path: str | None, model: str) -> str | None:
-    """Drop "transparent" if the model does not support it; pass "auto"/"opaque" through."""
+def _resolve_background(background: str | None, config_path: str | None,
+                        model: str, provider: str) -> str | None:
+    """Drop "transparent" if the (provider, model) pair does not support it."""
     if not background:
         return None
     if background != "transparent":
         return background
     try:
         cfg = load_config(config_path)
-        model_cfg = get_model_constraints(cfg, model)
+        model_cfg = get_model_constraints(cfg, model, provider=provider)
         supports = model_cfg.get("supports_transparent_output", False)
     except Exception:
         supports = False
     return "transparent" if supports else None
 
 
-def _check_size_allowed(size: str, config_path: str | None, model: str):
-    """Raise ValueError if the model has fixed allowed_sizes and the requested size is not in the list."""
+def _check_size_allowed(size: str, config_path: str | None, model: str, provider: str):
+    """Raise ValueError if the (provider, model) has fixed allowed_sizes and size is not in the list."""
     try:
         cfg = load_config(config_path)
-        model_cfg = get_model_constraints(cfg, model)
+        model_cfg = get_model_constraints(cfg, model, provider=provider)
         allowed_sizes = model_cfg.get("allowed_sizes")
     except Exception:
         return
     if not allowed_sizes:
         return
-    # Normalise size string (allow '*' as alias for 'x')
     normalized = size.replace("*", "x").lower().strip()
     if normalized not in [s.replace("*", "x").lower().strip() for s in allowed_sizes]:
         raise ValueError(
-            f"Model '{model}' only supports fixed sizes: {', '.join(allowed_sizes)}. "
+            f"Model '{provider}/{model}' only supports fixed sizes: {', '.join(allowed_sizes)}. "
             f"Requested size '{size}' is not allowed. "
             f"PL (precise_layout) mode will fail because the canvas size does not match the model's constraints."
         )
@@ -132,18 +137,23 @@ def _extract_nested(data, path: str):
 # OpenAI provider (synchronous)
 # ---------------------------------------------------------------------------
 
-def get_client(config_path: str | None = None):
-    """Initialize OpenAI client from config or environment."""
+def get_client(config_path: str | None = None, provider: str | None = None):
+    """Initialize OpenAI-compatible client for a specific provider.
+
+    Args:
+        config_path: Path to config.json (defaults to project config).
+        provider: Provider name (e.g. 'openai', 'apimart'). When None, uses the
+                  configured default provider.
+    """
     try:
         from openai import OpenAI
     except ImportError:
         print("ERROR: openai package not installed. Run: pip install openai", file=sys.stderr)
         sys.exit(1)
 
-    try:
-        cfg = get_api_config(load_config(config_path))
-    except Exception:
-        cfg = {}
+    if provider is None:
+        provider = _resolve_default_provider(config_path)
+    cfg = _provider_cfg(config_path, provider)
 
     api_key = cfg.get("api_key") or os.environ.get("OPENAI_API_KEY", "your-key")
     base_url = cfg.get("base_url") or os.environ.get("OPENAI_BASE_URL", "https://your-api-gateway.com/v1")
@@ -152,9 +162,9 @@ def get_client(config_path: str | None = None):
 
 def _text_to_image_openai(prompt: str, output: str, size: str, quality: str,
                           model: str, n: int, config_path: str | None,
-                          background: str | None):
-    client = get_client(config_path)
-    resolved_bg = _resolve_background(background, config_path, model)
+                          background: str | None, provider: str):
+    client = get_client(config_path, provider=provider)
+    resolved_bg = _resolve_background(background, config_path, model, provider)
     kwargs = {
         "model": model,
         "prompt": prompt,
@@ -178,8 +188,9 @@ def _text_to_image_openai(prompt: str, output: str, size: str, quality: str,
 
 def _image_to_image_openai(image_paths: str | list[str], prompt: str, output: str,
                            size: str, quality: str, model: str, n: int,
-                           config_path: str | None, background: str | None):
-    client = get_client(config_path)
+                           config_path: str | None, background: str | None,
+                           provider: str):
+    client = get_client(config_path, provider=provider)
 
     if isinstance(image_paths, str):
         image_paths = [image_paths]
@@ -202,7 +213,7 @@ def _image_to_image_openai(image_paths: str | list[str], prompt: str, output: st
                 for p in image_paths
             ]
 
-        resolved_bg = _resolve_background(background, config_path, model)
+        resolved_bg = _resolve_background(background, config_path, model, provider)
         kwargs = {
             "model": model,
             "image": image_input,
@@ -257,7 +268,7 @@ def _download_image(url: str, output_path: str):
 
 
 def _poll_async_task(base_url: str, api_key: str, task_id: str,
-                     async_config: dict) -> dict:
+                     async_config: dict, provider: str) -> dict:
     """Generic async task polling.
 
     Reads polling behaviour from async_config:
@@ -279,8 +290,7 @@ def _poll_async_task(base_url: str, api_key: str, task_id: str,
     interval = async_config.get("poll_interval", 5)
     timeout = async_config.get("timeout", 180)
 
-    provider_name = _get_provider()
-    print(f"[{provider_name}] Task {task_id} submitted. Waiting {initial_delay}s before polling...",
+    print(f"[{provider}] Task {task_id} submitted. Waiting {initial_delay}s before polling...",
           file=sys.stderr)
     time.sleep(initial_delay)
 
@@ -292,21 +302,21 @@ def _poll_async_task(base_url: str, api_key: str, task_id: str,
         status = _extract_nested(data, status_path)
         progress = _extract_nested(data, progress_path) or 0
 
-        print(f"[{provider_name}] Task {task_id} status={status} progress={progress}%",
+        print(f"[{provider}] Task {task_id} status={status} progress={progress}%",
               file=sys.stderr)
 
         if status == completed:
             return data
         if status in failed:
-            raise RuntimeError(f"{provider_name} task failed: status={status}")
+            raise RuntimeError(f"{provider} task failed: status={status}")
 
         time.sleep(interval)
 
-    raise TimeoutError(f"{provider_name} task {task_id} polling timeout after {timeout}s")
+    raise TimeoutError(f"{provider} task {task_id} polling timeout after {timeout}s")
 
 
 def _async_task_generate(payload: dict, output: str, n: int,
-                         config_path: str | None) -> list[str]:
+                         config_path: str | None, provider: str) -> list[str]:
     """Generic async task generation flow.
 
     1. POST payload to submit_path
@@ -315,7 +325,7 @@ def _async_task_generate(payload: dict, output: str, n: int,
     4. Extract image URLs via image_urls_extractor
     5. Download each URL to local file
     """
-    cfg = get_api_config(load_config(config_path))
+    cfg = _provider_cfg(config_path, provider)
     api_key = cfg.get("api_key") or os.environ.get("OPENAI_API_KEY", "your-key")
     base_url = cfg.get("base_url") or os.environ.get("OPENAI_BASE_URL", "https://api.apimart.ai/v1")
     base_url = base_url.rstrip("/")
@@ -335,7 +345,7 @@ def _async_task_generate(payload: dict, output: str, n: int,
         raise RuntimeError(f"Async task submit did not return task_id. Response: {data}")
 
     # 3. Poll
-    result = _poll_async_task(base_url, api_key, task_id, async_cfg)
+    result = _poll_async_task(base_url, api_key, task_id, async_cfg, provider)
 
     # 4. Extract images
     images = _extract_nested(result, images_path)
@@ -359,12 +369,12 @@ def _async_task_generate(payload: dict, output: str, n: int,
 
 
 # ---------------------------------------------------------------------------
-# Provider-specific wrappers (apimart)
+# Provider-specific wrappers (async_task)
 # ---------------------------------------------------------------------------
 
-def _get_apimart_extras(config_path: str | None = None) -> dict:
-    """Return apimart-specific config extras."""
-    cfg = get_api_config(load_config(config_path))
+def _get_async_extras(config_path: str | None, provider: str) -> dict:
+    """Return async_task provider-specific config extras."""
+    cfg = _provider_cfg(config_path, provider)
     return {
         "official_fallback": cfg.get("official_fallback", False),
     }
@@ -372,11 +382,11 @@ def _get_apimart_extras(config_path: str | None = None) -> dict:
 
 def _text_to_image_async_task(prompt: str, output: str, size: str, quality: str,
                               model: str, n: int, config_path: str | None,
-                              background: str | None):
+                              background: str | None, provider: str):
     """Text-to-image via generic async_task provider (apimart-compatible)."""
-    extras = _get_apimart_extras(config_path)
+    extras = _get_async_extras(config_path, provider)
 
-    # apimart-specific: normalise asterisk to 'x'
+    # async_task providers expect 'WxH' (no asterisk)
     size = size.replace("*", "x")
 
     payload = {
@@ -386,13 +396,13 @@ def _text_to_image_async_task(prompt: str, output: str, size: str, quality: str,
         "quality": quality,
         "n": n,
     }
-    resolved_bg = _resolve_background(background, config_path, model)
+    resolved_bg = _resolve_background(background, config_path, model, provider)
     if resolved_bg:
         payload["background"] = resolved_bg
     if extras.get("official_fallback"):
         payload["official_fallback"] = True
 
-    return _async_task_generate(payload, output, n, config_path)
+    return _async_task_generate(payload, output, n, config_path, provider)
 
 
 def _file_to_data_uri(path: str) -> str:
@@ -408,7 +418,8 @@ def _file_to_data_uri(path: str) -> str:
 
 def _image_to_image_async_task(image_paths: str | list[str], prompt: str, output: str,
                                size: str, quality: str, model: str, n: int,
-                               config_path: str | None, background: str | None):
+                               config_path: str | None, background: str | None,
+                               provider: str):
     """Image-to-image via generic async_task provider (apimart-compatible)."""
     if isinstance(image_paths, str):
         image_paths = [image_paths]
@@ -421,9 +432,9 @@ def _image_to_image_async_task(image_paths: str | list[str], prompt: str, output
     # Convert local files to base64 data URIs
     image_urls = [_file_to_data_uri(p) for p in image_paths]
 
-    extras = _get_apimart_extras(config_path)
+    extras = _get_async_extras(config_path, provider)
 
-    # apimart-specific: normalise asterisk to 'x'
+    # async_task providers expect 'WxH' (no asterisk)
     size = size.replace("*", "x")
 
     payload = {
@@ -434,13 +445,13 @@ def _image_to_image_async_task(image_paths: str | list[str], prompt: str, output
         "n": n,
         "image_urls": image_urls,
     }
-    resolved_bg = _resolve_background(background, config_path, model)
+    resolved_bg = _resolve_background(background, config_path, model, provider)
     if resolved_bg:
         payload["background"] = resolved_bg
     if extras.get("official_fallback"):
         payload["official_fallback"] = True
 
-    return _async_task_generate(payload, output, n, config_path)
+    return _async_task_generate(payload, output, n, config_path, provider)
 
 
 # ---------------------------------------------------------------------------
@@ -450,12 +461,20 @@ def _image_to_image_async_task(image_paths: str | list[str], prompt: str, output
 def text_to_image(prompt: str, output: str, size: str = "1024x1024", quality: str = "low",
                   model: str = "gpt-image-2", n: int = 1, config_path: str | None = None,
                   background: str | None = None):
-    """Generate image from text prompt."""
-    _check_size_allowed(size, config_path, model)
-    ptype = _get_provider_type(config_path)
+    """Generate image from text prompt.
+
+    `model` may be a plain model name (resolved against the default provider)
+    or a `provider/model` spec for cross-provider routing.
+    """
+    default_provider = _resolve_default_provider(config_path)
+    provider, actual_model = parse_model_spec(model, default_provider)
+    _check_size_allowed(size, config_path, actual_model, provider)
+    ptype = _provider_cfg(config_path, provider).get("provider_type", "openai")
     if ptype == "async_task":
-        return _text_to_image_async_task(prompt, output, size, quality, model, n, config_path, background)
-    return _text_to_image_openai(prompt, output, size, quality, model, n, config_path, background)
+        return _text_to_image_async_task(prompt, output, size, quality, actual_model, n,
+                                         config_path, background, provider)
+    return _text_to_image_openai(prompt, output, size, quality, actual_model, n,
+                                 config_path, background, provider)
 
 
 def image_to_image(image_paths: str | list[str], prompt: str, output: str,
@@ -463,12 +482,20 @@ def image_to_image(image_paths: str | list[str], prompt: str, output: str,
                    model: str = "gpt-image-2", n: int = 1,
                    config_path: str | None = None,
                    background: str | None = None):
-    """Generate image from existing image(s) + prompt (image-to-image)."""
-    _check_size_allowed(size, config_path, model)
-    ptype = _get_provider_type(config_path)
+    """Generate image from existing image(s) + prompt (image-to-image).
+
+    `model` may be a plain model name (resolved against the default provider)
+    or a `provider/model` spec for cross-provider routing.
+    """
+    default_provider = _resolve_default_provider(config_path)
+    provider, actual_model = parse_model_spec(model, default_provider)
+    _check_size_allowed(size, config_path, actual_model, provider)
+    ptype = _provider_cfg(config_path, provider).get("provider_type", "openai")
     if ptype == "async_task":
-        return _image_to_image_async_task(image_paths, prompt, output, size, quality, model, n, config_path, background)
-    return _image_to_image_openai(image_paths, prompt, output, size, quality, model, n, config_path, background)
+        return _image_to_image_async_task(image_paths, prompt, output, size, quality,
+                                          actual_model, n, config_path, background, provider)
+    return _image_to_image_openai(image_paths, prompt, output, size, quality,
+                                  actual_model, n, config_path, background, provider)
 
 
 # ---------------------------------------------------------------------------
@@ -487,10 +514,11 @@ def main():
     common.add_argument("--quality", default="low", choices=["low", "medium", "high", "auto"],
                         help="Generation quality")
     common.add_argument("--model", default=None,
-                        help="Model name. If omitted, resolves via --phase against api.<provider>.phase_models, "
-                             "or api.<provider>.default_model when --phase is also omitted.")
+                        help="Model spec, plain ('gpt-image-2') or qualified ('apimart/gpt-image-1.5'). "
+                             "If omitted, resolves via --phase against api.phase_models, "
+                             "or the default provider's default_model when --phase is also omitted.")
     common.add_argument("--phase", choices=["preview", "layer", "variant"], default=None,
-                        help="Workflow phase role. Looks up the matching model in api.<provider>.phase_models. "
+                        help="Workflow phase role. Looks up the matching model in api.phase_models. "
                              "Ignored when --model is provided.")
     common.add_argument("--n", type=int, default=1, help="Number of images to generate")
     common.add_argument("--background", choices=["transparent", "opaque", "auto"],
