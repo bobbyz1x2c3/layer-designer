@@ -38,6 +38,7 @@ from config_loader import (
     get_phase_model,
     parse_model_spec,
 )
+import style_loader
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +525,18 @@ def main():
     common.add_argument("--background", choices=["transparent", "opaque", "auto"],
                         default="auto",
                         help="Background type (default: auto, lets the model decide)")
+    common.add_argument("--style", default=None,
+                        help="Style library name (resolved against {workspace}/styles/{name}/). "
+                             "When set, design rules + anchor + (phase-appropriate) reference "
+                             "images from the style are folded into the prompt.")
+    common.add_argument("--style-from", default=None,
+                        help="Explicit path to a style directory containing style.json. "
+                             "Mutually exclusive with --style.")
+    common.add_argument("--control-type", default=None,
+                        help="Layer control type (e.g. 'button', 'card'). Filters which "
+                             "style.image_refs are injected in layer/variant phases. "
+                             "Ignored in preview phase. Pass an empty value or omit to "
+                             "skip style ref injection for this call.")
 
     # Generate (text-to-image)
     gen_parser = subparsers.add_parser("generate", parents=[common], help="Text-to-image generation")
@@ -547,10 +560,84 @@ def main():
         except Exception:
             effective_model = "gpt-image-2"
 
-    try:
+    # ------------------------------------------------------------------
+    # Style library: load + prompt rewrite + image-list assembly
+    # ------------------------------------------------------------------
+    if args.style and args.style_from:
+        print("ERROR: --style and --style-from are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+
+    style: dict | None = None
+    if args.style or args.style_from:
+        try:
+            style_dir = style_loader.resolve(args.style or args.style_from)
+            style = style_loader.load_style(style_dir)
+        except (FileNotFoundError, style_loader.StyleError) as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    effective_prompt = args.prompt
+    effective_images: list[str] | None = getattr(args, "image", None)
+    auto_routed = False
+
+    if style is not None:
+        # Determine the phase semantics used by build_prompt. For the CLI we
+        # mirror the workflow's --phase flag; without it, infer from the
+        # subcommand (generate→preview, edit→layer).
+        phase_for_prompt = args.phase
+        if phase_for_prompt is None:
+            phase_for_prompt = "preview" if args.command == "generate" else "layer"
+
+        rule_kinds = ("interaction",) if phase_for_prompt == "variant" else None
+
         if args.command == "generate":
+            built_prompt, ref_imgs = style_loader.build_prompt(
+                style,
+                user_prompt=args.prompt,
+                phase="preview",
+                rule_kinds=rule_kinds,
+            )
+            effective_prompt = built_prompt
+            if ref_imgs:
+                effective_images = [str(p) for p in ref_imgs]
+                auto_routed = True
+                print(
+                    f"[style] auto-routed to edit (style '{style.get('name', '?')}' "
+                    f"has {len(ref_imgs)} image_refs; phase=preview).",
+                    file=sys.stderr,
+                )
+            else:
+                effective_images = None  # stay in text-to-image
+        else:
+            # edit subcommand: --image is required and at least one path exists
+            user_images = list(args.image or [])
+            if not user_images:
+                print("ERROR: --image is required for edit.", file=sys.stderr)
+                sys.exit(1)
+            if len(user_images) > 1:
+                print(
+                    "ERROR: --style on the edit subcommand expects exactly one "
+                    "--image (the base). Run without --style if you need a "
+                    "multi-base edit.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            base_image = user_images[0]
+            built_prompt, all_imgs = style_loader.build_prompt(
+                style,
+                user_prompt=args.prompt,
+                phase=phase_for_prompt,
+                control_type=args.control_type,
+                base_image=base_image,
+                rule_kinds=rule_kinds,
+            )
+            effective_prompt = built_prompt
+            effective_images = [str(p) for p in all_imgs]
+
+    try:
+        if args.command == "generate" and not auto_routed:
             paths = text_to_image(
-                prompt=args.prompt,
+                prompt=effective_prompt,
                 output=args.output,
                 size=args.size,
                 quality=args.quality,
@@ -561,8 +648,8 @@ def main():
             )
         else:
             paths = image_to_image(
-                image_paths=args.image,
-                prompt=args.prompt,
+                image_paths=effective_images,
+                prompt=effective_prompt,
                 output=args.output,
                 size=args.size,
                 quality=args.quality,

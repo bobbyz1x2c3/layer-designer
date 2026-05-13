@@ -264,7 +264,7 @@ Two independent choices at Phase 1:
    - Phase 5 / Phase 8: Always use the already-validated `full_size` from `size_plan.json`
    - Never pass a raw user-provided or manually-constructed size string directly to `generate_image.py` without verifying it first
 3. **Explicit OK required**: No phase transition without explicit "OK" confirmation.
-4. **Style anchor persistence**: Extracted in Phase 2, must be included in ALL subsequent generation prompts.
+4. **Style anchor persistence**: The style anchor (whether extracted in Phase 2 or supplied by the Style Library) must be included in ALL subsequent generation prompts. For Style Library usage, schema, and CLI conventions, see `references/style-library.md` (consumption) and `references/style-generation.md` (authoring).
 5. **Per-layer canvas with matching aspect ratio**: For each non-background layer, compute a compliant canvas size that matches the layer's aspect ratio from `layer_plan.json` using `path_manager.compute_layer_size()`. The element is then prompted to fill this canvas proportionally.
 6. **Quality adaptive**:
    - **API testing / validation**: Always use `quality=low` when testing or validating a new API endpoint or provider.

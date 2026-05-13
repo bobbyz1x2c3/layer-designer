@@ -67,7 +67,10 @@ def get_state_prompt(control_type: str, state: str, custom_prompts: dict | None 
 
 def generate_variant(image_path: str, prompt: str, output_path: str,
                      size: str = "1024x1024", quality: str = "high", model: str = "gpt-image-2",
-                     config_path: str | None = None):
+                     config_path: str | None = None,
+                     style: str | None = None,
+                     style_from: str | None = None,
+                     control_type: str | None = None):
     """Generate a single variant using the generate_image.py edit command."""
     script_dir = Path(__file__).parent
     gen_script = script_dir / "generate_image.py"
@@ -84,6 +87,14 @@ def generate_variant(image_path: str, prompt: str, output_path: str,
     ]
     if config_path:
         cmd.extend(["--config", config_path])
+    if style_from:
+        cmd.extend(["--style-from", style_from, "--phase", "variant"])
+        if control_type:
+            cmd.extend(["--control-type", control_type])
+    elif style:
+        cmd.extend(["--style", style, "--phase", "variant"])
+        if control_type:
+            cmd.extend(["--control-type", control_type])
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -96,8 +107,15 @@ def main():
     parser.add_argument("--config", help="Path to config.json")
     parser.add_argument("--image", "-i", required=True, help="Base control layer image path")
     parser.add_argument("--control-type", "-t", default=None,
-                        choices=list(DEFAULT_STATE_PROMPTS.keys()),
-                        help="Type of UI control")
+                        help=(
+                            "Type of UI control. Built-in prompt templates: "
+                            f"{sorted(DEFAULT_STATE_PROMPTS)}. "
+                            "Other values are accepted (e.g. style-defined "
+                            "types like 'card'/'sidebar') and fall back to "
+                            "the 'generic' prompt template; the value is "
+                            "still forwarded to generate_image.py so the "
+                            "style library can select matching refs."
+                        ))
     parser.add_argument("--states", "-s", nargs="+", default=None,
                         help="States to generate (e.g., hover active disabled)")
     parser.add_argument("--output-dir", "-o", required=True, help="Output directory")
@@ -106,6 +124,11 @@ def main():
                         help="Generation quality")
     parser.add_argument("--model", default="gpt-image-2", help="Model name")
     parser.add_argument("--custom-prompts", help="JSON file with custom state prompts")
+    style_group = parser.add_mutually_exclusive_group()
+    style_group.add_argument("--style", default=None,
+                             help="Style library name (resolved under workspace/styles/{name}/).")
+    style_group.add_argument("--style-from", default=None,
+                             help="Explicit path to a style directory (containing style.json).")
     args = parser.parse_args()
 
     # Apply config defaults where CLI args not provided
@@ -159,6 +182,9 @@ def main():
                 quality=args.quality,
                 model=args.model,
                 config_path=args.config,
+                style=args.style,
+                style_from=args.style_from,
+                control_type=args.control_type,
             )
             results[state] = output_path
             print(f"VARIANT [{state}]: {output_path}")
@@ -168,13 +194,19 @@ def main():
 
     # Write manifest
     manifest_path = output_dir / f"{base_name}_variants_manifest.json"
+    manifest: dict = {
+        "base_image": args.image,
+        "control_type": args.control_type,
+        "states": args.states,
+        "results": results,
+    }
+    if args.style or args.style_from:
+        manifest["style_ref"] = {
+            "name": args.style,
+            "dir": args.style_from,
+        }
     with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump({
-            "base_image": args.image,
-            "control_type": args.control_type,
-            "states": args.states,
-            "results": results,
-        }, f, indent=2, ensure_ascii=False)
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
     print(f"MANIFEST: {manifest_path}")
 
 

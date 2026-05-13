@@ -137,6 +137,13 @@
     "default_control_type": "generic",
     "default_states": ["hover", "active", "disabled"]
   },
+  "style": {
+    "_comment": "Optional Style Library defaults. Set default_style to a name under layer-designer/styles/{name}/ to apply that style whenever --style/--style-from is omitted at the CLI. Leave null to keep the workflow style-free unless --style is passed explicitly. See references/style-library.md.",
+    "default_style": null,
+    "spec_size": "2048x2048",
+    "spec_quality": "medium",
+    "spec_model": null
+  },
   "matting": {
     "model": "u2net",
     "model_file": "",

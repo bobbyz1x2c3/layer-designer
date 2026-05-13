@@ -89,10 +89,22 @@ Generate `manifest.json` via `PathManager.write_manifest()`:
   "project": "my-dashboard",
   "dimensions": {"width": 1920, "height": 1080},
   "style_anchor": "...",
+  "style_ref": {
+    "name": "saas-blue",
+    "dir": "styles/saas-blue",
+    "schema_version": "1.0"
+  },
   "layers": [
     {
       "name": "background",
       "layout": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+      "control_type": null,
+      "states": []
+    },
+    {
+      "name": "submit_button",
+      "layout": {"x": 1640, "y": 980, "width": 200, "height": 48},
+      "control_type": "button",
       "states": []
     }
   ],
@@ -101,6 +113,13 @@ Generate `manifest.json` via `PathManager.write_manifest()`:
   "variants_requested": false
 }
 ```
+
+**Style Library fields** (only present when Phase 2 ran with `--style`):
+
+- Top-level `style_ref` — copied verbatim from `layer_plan.style_ref` / `enhanced_layer_plan.style_ref`. Lets downstream consumers (Figma plugin, design-system audits) trace which style produced these layers.
+- Per-layer `control_type` — copied from the corresponding entry in the enhanced plan. Values are drawn from the union of `style.image_refs[*].use_for` (e.g., `"button"`, `"sidebar"`, `"card"`) or `null`.
+
+When `--style` was not used, omit both fields entirely. Downstream code treats their absence as "no style in play" — no special-case handling required.
 
 ---
 

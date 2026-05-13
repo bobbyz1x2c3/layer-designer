@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from path_manager import PathManager
+import style_loader
 
 
 def run_generation(cmd, layer_name):
@@ -36,6 +37,11 @@ def main():
     ap = argparse.ArgumentParser(description="Batch generate layers for PL1TEST")
     ap.add_argument("--pl-only", action="store_true",
                     help="Only generate layers with precise_layout: true (skip background and non-PL layers).")
+    style_group = ap.add_mutually_exclusive_group()
+    style_group.add_argument("--style", default=None,
+                             help="Style library name (resolved under workspace/styles/{name}/).")
+    style_group.add_argument("--style-from", default=None,
+                             help="Explicit path to a style directory (containing style.json).")
     args = ap.parse_args()
 
     project = "PL1TEST"
@@ -51,6 +57,39 @@ def main():
 
     style_anchor = layer_plan.get("style_anchor", "")
     layers = layer_plan.get("layers", [])
+
+    # Resolve style: CLI override > layer_plan.style_ref
+    style_dir: Path | None = None
+    if args.style_from:
+        style_dir = Path(args.style_from).resolve()
+        if not (style_dir / "style.json").exists():
+            print(f"[ERROR] style.json not found in {style_dir}")
+            sys.exit(1)
+        print(f"[STYLE] Using --style-from: {style_dir}")
+    elif args.style:
+        try:
+            style_dir = style_loader.resolve(args.style)
+            print(f"[STYLE] Resolved --style '{args.style}' -> {style_dir}")
+        except FileNotFoundError as e:
+            print(f"[ERROR] {e}")
+            sys.exit(1)
+    else:
+        ref = layer_plan.get("style_ref") or {}
+        ref_dir = ref.get("dir")
+        ref_name = ref.get("name")
+        if ref_dir:
+            cand = Path(ref_dir)
+            if not cand.is_absolute():
+                cand = (layer_plan_path.parent / cand).resolve()
+            if (cand / "style.json").exists():
+                style_dir = cand
+                print(f"[STYLE] Using layer_plan.style_ref.dir: {style_dir}")
+        elif ref_name:
+            try:
+                style_dir = style_loader.resolve(ref_name)
+                print(f"[STYLE] Resolved layer_plan.style_ref.name '{ref_name}' -> {style_dir}")
+            except FileNotFoundError:
+                print(f"[WARN] layer_plan.style_ref.name '{ref_name}' could not be resolved; continuing without style.")
 
     if args.pl_only:
         layers = [l for l in layers if l.get("precise_layout", False)]
@@ -74,6 +113,7 @@ def main():
         layout = layer.get("layout", {})
         description = layer.get("contents", "")
         tier = layer.get("quality_tier", "low")
+        style_active = style_dir is not None
 
         # Compute size
         if is_bg:
@@ -91,16 +131,18 @@ def main():
         if layer.get("opacity", 1.0) < 1.0:
             base += " This element sits on top of a background in the full design. When extracting it, preserve the element's own intrinsic colors and texture cleanly — do NOT blend background colors into the element. The element should retain its intended solid appearance with pure, unmixed colors."
 
+        anchor_suffix = "" if style_active else f" {style_anchor}."
+
         if is_bg:
             prompt = (
                 f"From this UI design, extract ONLY the background layer. "
                 f"Include: {description}. Full canvas filled completely. "
                 f"NO transparent areas. NO UI elements, NO buttons, NO text, NO icons, NO overlays. "
-                f"Only the pure background fill, texture, gradient, or environment. {style_anchor}."
+                f"Only the pure background fill, texture, gradient, or environment.{anchor_suffix}"
             )
         elif is_pl:
             prompt = (
-                f"Extract ONLY the {layer_id} from the source reference image. {description}. {style_anchor}. "
+                f"Extract ONLY the {layer_id} from the source reference image. {description}.{anchor_suffix} "
                 f"CRITICAL: Preserve the element EXACTLY as it appears in the source reference image — "
                 f"same position, same size, same proportions. "
                 f"Do NOT center the element, do NOT enlarge it, do NOT reposition it. "
@@ -110,7 +152,7 @@ def main():
             )
         else:
             prompt = (
-                f"{base} Transparent background, PNG with alpha channel, only this element isolated. {style_anchor}. "
+                f"{base} Transparent background, PNG with alpha channel, only this element isolated.{anchor_suffix} "
                 f"CRITICAL: STRICTLY maintain the element's original aspect ratio. Do NOT stretch, distort, or change proportions in any way. "
                 f"Scale the element proportionally to fit within the canvas while leaving a small transparent margin of approximately 3-5% on each side. "
                 f"Do NOT let the element touch or overlap the canvas boundary. This margin ensures clean background removal in post-processing."
@@ -128,6 +170,11 @@ def main():
             f'--size {size_str} '
             f'--quality {tier}'
         )
+        if style_dir is not None:
+            cmd += f' --style-from "{style_dir}" --phase layer'
+            ct = layer.get("control_type")
+            if ct:
+                cmd += f' --control-type "{ct}"'
 
         commands.append((layer_id, cmd))
         print(f"[PLAN] {layer_id}: size={size_str}, pl={is_pl}, bg={is_bg}")

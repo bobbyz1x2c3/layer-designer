@@ -23,6 +23,7 @@
 - Latest rough version of each layer from Phase 3/4
 - `enhanced_layer_plan.json` (or `layer_plan.json`) with quality tiers and finalized layout
 - `style_anchor` string
+- **(Optional)** `layer_plan.style_ref` + per-layer `control_type` if Phase 2 ran with `--style`. These propagate forward through `expand_repeats.py` and `detect_layer_positions.py`, so `enhanced_layer_plan.json` carries them too.
 
 ---
 
@@ -98,6 +99,31 @@ python scripts/generate_image.py edit \
 - `size`: full canvas `full_size` from `size_plan.json` (do NOT use `compute_layer_size()`)
 - `quality`: **visually reassessed** quality tier from Step 2
 - Save via `PathManager.get_final_layer_path(layer_name)`
+
+**Style Library Integration** (only when `--style` was active in Phase 2):
+
+If `enhanced_layer_plan.style_ref` (or `layer_plan.style_ref`) is present, every refinement call MUST forward the style:
+
+```bash
+python scripts/generate_image.py edit \
+  --config config.json \
+  --image {high_quality_preview} \
+  --prompt "Extract ONLY the {layer_name}. {description}. High quality, polished, transparent background." \
+  --output {final_layer_path} --size {layer_w}x{layer_h} --quality {tier} \
+  --phase layer \
+  --style {style_ref.name} \
+  --control-type {layer.control_type}
+```
+
+- Use `--style-from {absolute path}` instead of `--style` for ad-hoc styles outside the workspace styles dir.
+- `--phase layer` keeps Phase 6 on the same layer-phase prompt template as Phase 3 — the only differences are higher `--quality` and the full-resolution reference preview.
+- Omit `--control-type` when the layer's `control_type` is `null` or missing; the composer will still apply rules + anchor but won't attach any reference images.
+- Do **not** also hand-paste the style_anchor into `--prompt`; `style_loader.build_prompt()` already prefixes both the rules block and derived anchor.
+- If `style_ref` is missing entirely (i.e., Phase 2 ran without `--style`), omit all style flags. Phase 6 then behaves identically to the pre-Style-Library code path.
+
+For background layers, the same rule applies: pass `--style ...` if present, with `--control-type null` omitted. The composer skips reference-image attachment and only injects rules + anchor — appropriate for full-canvas background regeneration.
+
+See `references/style-library.md` § 4b for the full layer-phase prompt structure.
 
 ---
 

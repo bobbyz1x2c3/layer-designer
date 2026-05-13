@@ -223,6 +223,45 @@ This anchor must be included in **all subsequent generation prompts** (Phase 3~8
 
 ---
 
+## Step 4b: Control Type Tagging (only when `--style` is in use)
+
+When Phase 2 runs with `--style <name>` or `--style-from <path>`, every layer in `layer_plan.json` MUST gain a `control_type` field. This binds each layer to the style's reference images so Phase 3/6/8 can pass the right refs into the prompt.
+
+**Procedure**:
+
+1. Load the style via `style_loader.load_style(style_dir)`.
+2. Compute the valid enum via `style_loader.list_control_types(style)` — this returns the union of `style.image_refs[*].use_for`, e.g. `["button", "sidebar", "navigation", "card", "panel"]`.
+3. For each layer, assign `control_type` to either:
+   - One of the enum values, when the layer matches a control category covered by the style (e.g., a CTA button → `"button"`)
+   - `null`, when the layer doesn't correspond to any defined category (e.g., a hero chart, background art, decorative shapes)
+4. Add a top-level `style_ref` block recording the style provenance:
+   ```json
+   "style_ref": {
+     "name": "saas-blue",
+     "dir": "styles/saas-blue",
+     "schema_version": "1.0"
+   }
+   ```
+
+**Example**:
+```json
+{
+  "style_anchor": "...",
+  "style_ref": { "name": "saas-blue", "dir": "styles/saas-blue", "schema_version": "1.0" },
+  "layers": [
+    { "name": "submit_button", "control_type": "button", "layout": {...} },
+    { "name": "left_sidebar",  "control_type": "sidebar", "layout": {...} },
+    { "name": "main_chart",    "control_type": null,      "layout": {...} }
+  ]
+}
+```
+
+**Without `--style`**: skip this step. Neither `style_ref` nor `control_type` should appear in the output — their absence signals "no style in play" to downstream scripts.
+
+See [`style-library.md`](style-library.md) for the full schema and [`style-generation.md`](style-generation.md) for creating styles.
+
+---
+
 ## Step 5: Visual Opacity Judgment
 
 For each layer, the agent must visually judge whether it should be **semi-transparent** when stacked over other layers. Add an `opacity` field directly to each layer entry in `layer_plan.json`:

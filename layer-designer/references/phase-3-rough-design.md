@@ -28,6 +28,7 @@ Before starting, ensure you have:
 - `size_plan.json` with `early_size` for this phase
 - Confirmed preview image from Phase 1
 - `style_anchor` string
+- **(Optional)** `layer_plan.style_ref` block if Phase 2 ran with `--style` — records the active style and its on-disk location. Each layer also carries a `control_type` field (may be `null`) in that case.
 
 ---
 
@@ -78,6 +79,31 @@ python scripts/generate_image.py edit \
 - `size`: per-layer compliant size from `compute_layer_size()` (background uses full `early_size`)
 - `quality`: layer's quality tier
 - Save output with timestamp in layer folder
+
+**Style Library Integration** (only when `--style` was active in Phase 2):
+
+If `layer_plan.style_ref` is present, every `generate_image.py edit` invocation in this phase MUST forward the style:
+
+```bash
+python scripts/generate_image.py edit \
+  --config config.json \
+  --image {confirmed_preview_path} \
+  --prompt "Extract ONLY the {layer_name}. {description}. Transparent background, isolated element." \
+  --output {layer_path} --size {layer_w}x{layer_h} --quality {tier} \
+  --phase layer \
+  --style {style_ref.name} \
+  --control-type {layer.control_type}
+```
+
+- Resolution: prefer `--style {layer_plan.style_ref.name}` (workspace lookup); use `--style-from {absolute path}` only for ad-hoc styles outside `layer-designer/styles/`.
+- `--phase layer` triggers the layer-phase prompt composer in `style_loader.build_prompt()` — it appends `Image2 [control_type]: <role>` lines for matching `image_refs`, plus the design rules and derived anchor.
+- `--control-type {layer.control_type}` selects which `image_refs` entries to forward. If `control_type` is `null` or absent, omit the flag — the composer will still inject rules + anchor but won't attach any reference images, and the prompt will not carry `[type]` tags.
+- Do **not** also hand-paste the style_anchor string into `--prompt`; `style_loader.build_prompt()` already prefixes it. Duplicating it leads to noisy double-mentions.
+- If no `style_ref` exists in `layer_plan.json`, omit all style flags — Phase 3 behaves exactly as before.
+
+See `references/style-library.md` § 4b "Layer phase prompt assembly" for the full prompt template and image-budget rules (base + matching refs, hard cap of 5).
+
+---
 
 **Repeat-mode layer handling**:
 

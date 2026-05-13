@@ -564,6 +564,96 @@ class PathManager:
             json.dump(data, f, indent=2, ensure_ascii=False)
         return path
 
+    # ------------------------------------------------------------------
+    # Workspace / Style Library (project-independent)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def get_workspace_root() -> Path:
+        """
+        Return the layer-designer workspace root (parent of scripts/).
+
+        This is the directory that contains scripts/, references/, styles/,
+        config.example.json, SKILL.md, etc.
+        """
+        return Path(__file__).resolve().parent.parent
+
+    @classmethod
+    def get_styles_dir(cls) -> Path:
+        """Return the workspace-level styles directory."""
+        return cls.get_workspace_root() / "styles"
+
+    @classmethod
+    def get_style_dir(cls, name: str) -> Path:
+        """
+        Return the directory for a named style (no existence check).
+
+        Args:
+            name: Style name; will be sanitized (alnum + - _ only).
+        """
+        return cls.get_styles_dir() / cls._sanitize_name(name)
+
+    @classmethod
+    def list_available_styles(cls) -> list[str]:
+        """
+        List names of styles registered under {workspace}/styles/.
+
+        A directory counts as a style only if it contains style.json.
+        """
+        styles_dir = cls.get_styles_dir()
+        if not styles_dir.exists():
+            return []
+        return sorted(
+            d.name
+            for d in styles_dir.iterdir()
+            if d.is_dir() and (d / "style.json").exists()
+        )
+
+    @classmethod
+    def resolve_style(cls, name_or_path: str) -> Path:
+        """
+        Resolve a style name or explicit path to an absolute style directory.
+
+        Resolution order:
+            1. Explicit path (absolute or relative) — kept if it's a directory
+               containing style.json.
+            2. {workspace}/styles/{name}/
+            3. {workspace}/{name}/  (fallback for nonstandard layouts)
+
+        Raises:
+            FileNotFoundError: with a list of available styles when nothing
+                matches.
+        """
+        if not name_or_path:
+            raise ValueError("Style name or path must be non-empty")
+
+        candidate = Path(name_or_path)
+        if candidate.is_absolute() or candidate.exists():
+            if candidate.is_dir() and (candidate / "style.json").exists():
+                return candidate.resolve()
+
+        styles_dir = cls.get_styles_dir()
+        candidate2 = styles_dir / name_or_path
+        if candidate2.is_dir() and (candidate2 / "style.json").exists():
+            return candidate2.resolve()
+
+        workspace = cls.get_workspace_root()
+        candidate3 = workspace / name_or_path
+        if candidate3.is_dir() and (candidate3 / "style.json").exists():
+            return candidate3.resolve()
+
+        available = cls.list_available_styles()
+        if available:
+            raise FileNotFoundError(
+                f"Style '{name_or_path}' not found.\n"
+                f"Available styles in {styles_dir}:\n  - "
+                + "\n  - ".join(available)
+            )
+        raise FileNotFoundError(
+            f"Style '{name_or_path}' not found and no styles registered at "
+            f"{styles_dir}."
+        )
+
 
 def main():
     import argparse

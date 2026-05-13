@@ -286,6 +286,8 @@ def generate_enhanced_plan(
             "source": rel_path,
             "opacity": layer_info.get("opacity", 1.0),
         }
+        if "control_type" in layer_info:
+            layer_entry["control_type"] = layer_info.get("control_type")
         if is_precise_layout:
             layer_entry["precise_layout"] = True
         # Preserve repeat_mode metadata for preview rendering
@@ -314,6 +316,8 @@ def generate_enhanced_plan(
         "stacking_order": stacking,
         "repeat_meta": layer_plan.get("repeat_meta", []),
     }
+    if "style_ref" in layer_plan:
+        enhanced_plan["style_ref"] = layer_plan["style_ref"]
 
     # Save enhanced_layer_plan.json with UTF-8 BOM for Windows compatibility
     plan_path = output_dir / "enhanced_layer_plan.json"

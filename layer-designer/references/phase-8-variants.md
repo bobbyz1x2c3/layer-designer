@@ -24,6 +24,7 @@
 - Final refined layer images from Phase 6/7
 - `enhanced_layer_plan.json` (or `layer_plan.json`) to identify which layers contain controls
 - `style_anchor` string
+- **(Optional)** `style_ref` (top-level) + per-layer `control_type` from `enhanced_layer_plan.json` if Phase 2 ran with `--style`. The variant phase reads `control_type` to pick the matching reference image and to filter rules to the `interaction` category.
 
 ---
 
@@ -70,6 +71,39 @@ python scripts/generate_image.py edit \
 - `size`: **per-control compliant size** from `compute_layer_size()` — usually NOT `full_size`
 - `quality`: **inherit the control's `quality_tier` from `layer_plan.json`** — do NOT blindly use `high`. If the control was assigned `low` or `medium` in Phase 2/6, use that tier for variants too.
 - Save via `PathManager.get_variant_path(control_name, state)`
+
+**Style Library Integration** (only when `--style` was active in Phase 2):
+
+If `enhanced_layer_plan.style_ref` is present, every variant invocation MUST forward the style:
+
+```bash
+# Batch (preferred)
+python scripts/generate_variants.py \
+  --config config.json \
+  --image {control_layer.png} --control-type {layer.control_type} \
+  --states hover active disabled \
+  --output-dir {variant_dir} --size {control_w}x{control_h} --quality {tier} \
+  --style {style_ref.name}
+
+# Individual
+python scripts/generate_image.py edit \
+  --config config.json \
+  --image {control_layer.png} \
+  --prompt "Generate the {state} state of this {control_type}. Maintain dimensions, palette, typography, base shape." \
+  --output {variant_path} --size {control_w}x{control_h} --quality {tier} \
+  --phase variant \
+  --style {style_ref.name} \
+  --control-type {layer.control_type}
+```
+
+- `--phase variant` triggers the variant-phase prompt composer in `style_loader.build_prompt()`. Differences from layer phase:
+  - The base image (Image1) is the **finished control PNG**, not the preview, and it carries a `[control_type]` tag because it is itself an instance of that type.
+  - Rules are filtered to the `interaction` category only — layout/typography rules are noise for state changes.
+- `--control-type` is **mandatory** for batch mode. It is also the same value already required by `generate_variants.py` for picking the state-transition wording, so this is not a new requirement — just remember to pull it from `enhanced_layer_plan.json` instead of hard-coding.
+- If the control's `control_type` is `null` or no `image_refs` in the style match, `generate_variants.py` still works — the prompt simply has no Image2 reference, and only rules + anchor are injected.
+- If `style_ref` is missing from the plan, omit all style flags. Phase 8 then behaves exactly as before.
+
+See `references/style-library.md` § 4c "Variant phase prompt assembly" for the full prompt template.
 
 ---
 

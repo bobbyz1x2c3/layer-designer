@@ -201,6 +201,8 @@ def _build_instances(parent: dict, config: dict) -> list[dict]:
     repeat_mode = parent.get("repeat_mode", "none")
     parent_id = parent.get("id", parent.get("name", "unknown"))
     parent_name = parent.get("name", parent_id)
+    parent_has_control_type = "control_type" in parent
+    parent_control_type = parent.get("control_type")
 
     # Determine cell start position
     # If area_layout has width/height, it's a panel boundary; apply padding offset.
@@ -224,7 +226,7 @@ def _build_instances(parent: dict, config: dict) -> list[dict]:
             for col in range(cols):
                 x = start_x + col * (cell_w + gap_x)
                 y = start_y + row * (cell_h + gap_y)
-                instances.append({
+                instance = {
                     "id": f"{parent_id}_cell_{row}_{col}",
                     "name": f"{parent_name} ({row + 1},{col + 1})",
                     "content": parent.get("description", parent.get("contents", "")),
@@ -239,7 +241,10 @@ def _build_instances(parent: dict, config: dict) -> list[dict]:
                     "cell_index": idx,
                     "cell_row": row,
                     "cell_col": col,
-                })
+                }
+                if parent_has_control_type:
+                    instance["control_type"] = parent_control_type
+                instances.append(instance)
                 idx += 1
 
     elif repeat_mode == "list":
@@ -253,7 +258,7 @@ def _build_instances(parent: dict, config: dict) -> list[dict]:
             else:
                 x = start_x
                 y = start_y + i * (cell_h + gap)
-            instances.append({
+            instance = {
                 "id": f"{parent_id}_item_{i}",
                 "name": f"{parent_name} [{i + 1}]",
                 "content": parent.get("description", parent.get("contents", "")),
@@ -268,7 +273,10 @@ def _build_instances(parent: dict, config: dict) -> list[dict]:
                 "cell_index": i,
                 "cell_row": i if direction == "vertical" else 0,
                 "cell_col": i if direction == "horizontal" else 0,
-            })
+            }
+            if parent_has_control_type:
+                instance["control_type"] = parent_control_type
+            instances.append(instance)
 
     return instances
 
@@ -291,6 +299,8 @@ def expand_layer_plan(layer_plan: dict, phase: str = "rough") -> dict:
         "stacking_order": [],
         "repeat_meta": [],
     }
+    if "style_ref" in layer_plan:
+        result["style_ref"] = layer_plan["style_ref"]
 
     original_layers = layer_plan.get("layers", [])
     original_order = layer_plan.get("stacking_order", [])

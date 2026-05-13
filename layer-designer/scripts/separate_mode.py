@@ -40,6 +40,7 @@ if str(_script_dir) not in sys.path:
 
 from config_loader import load_config
 from path_manager import PathManager
+import style_loader
 
 
 def _log(msg: str, *, important: bool = False) -> None:
@@ -130,8 +131,13 @@ def create_size_plan(pm: PathManager, config_path: str, img_width: int, img_heig
 
 
 def _build_pl_prompt(layer_id: str, description: str, style_anchor: str,
-                     opacity: float) -> str:
-    """Build PL mode prompt for layer extraction."""
+                     opacity: float, style_active: bool = False) -> str:
+    """Build PL mode prompt for layer extraction.
+
+    When `style_active` is True, the textual style anchor is NOT inlined here
+    because `generate_image.py --style` will prepend the full style block
+    (anchor + rules + tagged refs) at subprocess invocation time.
+    """
     base = f"Extract ONLY the {layer_id} from the source reference image. {description}."
 
     if opacity < 1.0:
@@ -142,8 +148,9 @@ def _build_pl_prompt(layer_id: str, description: str, style_anchor: str,
             "The element should retain its intended solid appearance with pure, unmixed colors."
         )
 
+    anchor_suffix = "" if style_active else f" {style_anchor}."
     prompt = (
-        f"{base} {style_anchor}. "
+        f"{base}{anchor_suffix} "
         f"CRITICAL: Preserve the element EXACTLY as it appears in the source reference image — "
         f"same position, same size, same proportions. "
         f"Do NOT center the element, do NOT enlarge it, do NOT reposition it. "
@@ -154,13 +161,19 @@ def _build_pl_prompt(layer_id: str, description: str, style_anchor: str,
     return prompt
 
 
-def _build_bg_prompt(layer_id: str, description: str, style_anchor: str) -> str:
-    """Build prompt for background layer extraction."""
+def _build_bg_prompt(layer_id: str, description: str, style_anchor: str,
+                     style_active: bool = False) -> str:
+    """Build prompt for background layer extraction.
+
+    When `style_active` is True, the anchor is omitted (added later by
+    generate_image.py --style).
+    """
+    anchor_suffix = "" if style_active else f" {style_anchor}."
     return (
         f"From this UI design, extract ONLY the background layer. "
         f"Include: {description}. Full canvas filled completely. "
         f"NO transparent areas. NO UI elements, NO buttons, NO text, NO icons, NO overlays. "
-        f"Only the pure background fill, texture, gradient, or environment. {style_anchor}."
+        f"Only the pure background fill, texture, gradient, or environment.{anchor_suffix}"
     )
 
 
@@ -172,6 +185,7 @@ def generate_layer(
     canvas_w: int,
     canvas_h: int,
     quality: str,
+    style_dir: str | None = None,
 ) -> tuple[str, bool, str]:
     """Generate a single layer in PL mode."""
     layer_id = layer_info.get("id", "") or layer_info.get("name", "")
@@ -179,15 +193,17 @@ def generate_layer(
     description = layer_info.get("contents", "") or layer_info.get("description", "")
     style_anchor = layer_info.get("style_anchor", "")
     opacity = layer_info.get("opacity", 1.0)
+    control_type = layer_info.get("control_type")
+    style_active = style_dir is not None
 
     # Use full canvas size for all layers in separate mode
     size_str = f"{canvas_w}x{canvas_h}"
 
     # Build prompt
     if is_bg:
-        prompt = _build_bg_prompt(layer_id, description, style_anchor)
+        prompt = _build_bg_prompt(layer_id, description, style_anchor, style_active=style_active)
     else:
-        prompt = _build_pl_prompt(layer_id, description, style_anchor, opacity)
+        prompt = _build_pl_prompt(layer_id, description, style_anchor, opacity, style_active=style_active)
 
     out_dir = pm.get_layer_dir(layer_id)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -205,7 +221,12 @@ def generate_layer(
         "--quality", quality,
     ]
 
-    _log(f"[GEN] {layer_id}: size={size_str}, bg={is_bg}")
+    if style_active:
+        cmd += ["--style-from", style_dir, "--phase", "layer"]
+        if control_type:
+            cmd += ["--control-type", control_type]
+
+    _log(f"[GEN] {layer_id}: size={size_str}, bg={is_bg}, control_type={control_type}, style={style_active}")
     success, output = _run_cmd(cmd, timeout=300)
 
     if success:
@@ -357,6 +378,15 @@ def main() -> None:
         "--quiet", action="store_true",
         help="Reduce log verbosity",
     )
+    style_group = parser.add_mutually_exclusive_group()
+    style_group.add_argument(
+        "--style", default=None,
+        help="Style library name (resolved under workspace/styles/{name}/).",
+    )
+    style_group.add_argument(
+        "--style-from", default=None,
+        help="Explicit path to a style directory (containing style.json).",
+    )
 
     args = parser.parse_args()
 
@@ -392,6 +422,47 @@ def main() -> None:
 
     style_anchor = layer_plan.get("style_anchor", "")
 
+    # ── Resolve active style (CLI override > layer_plan.style_ref) ──
+    style_dir: Path | None = None
+    style_name_for_log: str | None = None
+    if args.style_from:
+        style_dir = Path(args.style_from).resolve()
+        if not (style_dir / "style.json").exists():
+            print(f"[ERROR] style.json not found in {style_dir}")
+            sys.exit(1)
+        style_name_for_log = style_dir.name
+    elif args.style:
+        try:
+            style_dir = style_loader.resolve(args.style)
+        except FileNotFoundError as e:
+            print(f"[ERROR] {e}")
+            sys.exit(1)
+        style_name_for_log = args.style
+    else:
+        # Fall back to layer_plan.style_ref if present
+        style_ref = layer_plan.get("style_ref") or {}
+        if isinstance(style_ref, dict):
+            ref_dir = style_ref.get("dir")
+            ref_name = style_ref.get("name")
+            try:
+                if ref_dir:
+                    candidate = Path(ref_dir)
+                    if not candidate.is_absolute():
+                        candidate = (PathManager.get_workspace_root() / candidate).resolve()
+                    if (candidate / "style.json").exists():
+                        style_dir = candidate
+                        style_name_for_log = ref_name or candidate.name
+                elif ref_name:
+                    style_dir = style_loader.resolve(ref_name)
+                    style_name_for_log = ref_name
+            except FileNotFoundError:
+                _log(
+                    f"[WARN] layer_plan.style_ref references missing style "
+                    f"({ref_name or ref_dir}); continuing without style.",
+                    important=True,
+                )
+                style_dir = None
+
     _log("=" * 60)
     _log("  Separate Mode")
     _log("=" * 60)
@@ -399,6 +470,8 @@ def main() -> None:
     _log(f"Reference: {reference_path}")
     _log(f"Layers: {len(layers)}")
     _log(f"Quality: {args.quality}")
+    if style_dir is not None:
+        _log(f"Style: {style_name_for_log} ({style_dir})")
 
     # ── 2. Create size_plan.json ────────────────────────────────────
     img_w, img_h = _get_image_size(reference_path)
@@ -418,10 +491,12 @@ def main() -> None:
     _log("=" * 60)
 
     gen_commands = []
+    style_dir_str = str(style_dir) if style_dir is not None else None
     for layer in layers:
         layer["style_anchor"] = style_anchor  # Inject style_anchor into each layer
         gen_commands.append((
-            layer, str(ref_dest), config_path, pm, canvas_w, canvas_h, args.quality
+            layer, str(ref_dest), config_path, pm,
+            canvas_w, canvas_h, args.quality, style_dir_str,
         ))
 
     gen_results = {}

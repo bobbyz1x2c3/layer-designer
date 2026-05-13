@@ -1449,6 +1449,8 @@ def _build_enhanced_layer_plan(
         "stacking_order": [],
         "repeat_meta": [],
     }
+    if "style_ref" in layer_plan:
+        enhanced["style_ref"] = layer_plan["style_ref"]
 
     for layer in layer_plan.get("layers", []):
         layer_id = layer["id"]
@@ -1463,6 +1465,8 @@ def _build_enhanced_layer_plan(
             "source": "",
             "opacity": layer.get("opacity", 1.0),
         }
+        if "control_type" in layer:
+            new_layer["control_type"] = layer.get("control_type")
 
         if layer.get("is_background"):
             # Background fills the preview canvas; it is not part of detection
