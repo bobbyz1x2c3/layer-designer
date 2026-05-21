@@ -167,7 +167,7 @@ Pipe the final JSON into stdin. The script will:
 4. Verify every `image_refs[*].path` in the draft refers to a file
    now present in the folder (fails fast otherwise).
 5. Write `style.json`.
-5. Re-load via `style_loader.load_style()` and run
+6. Re-load via `style_loader.load_style()` and run
    `style_loader.validate()`. Any failure leaves the file on disk for
    inspection and exits non-zero.
 

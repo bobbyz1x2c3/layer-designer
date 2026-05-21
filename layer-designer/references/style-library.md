@@ -134,7 +134,9 @@ Two mutually exclusive flags, supported by every generation entry point
 --style-from /path/to/external/style-dir
 ```
 
-**Resolution order** (each tool follows the same rule):
+**Resolution order** (caller tools that read `layer_plan.json` implement
+all three layers; `generate_image.py` itself only accepts CLI flags and
+relies on the caller to resolve `layer_plan.style_ref`):
 
 1. CLI flag wins (`--style` or `--style-from`)
 2. Otherwise `layer_plan.style_ref` is consulted (set by Phase 2 when

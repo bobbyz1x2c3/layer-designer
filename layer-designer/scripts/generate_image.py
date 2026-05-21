@@ -616,9 +616,9 @@ def main():
                 sys.exit(1)
             if len(user_images) > 1:
                 print(
-                    "ERROR: --style on the edit subcommand expects exactly one "
-                    "--image (the base). Run without --style if you need a "
-                    "multi-base edit.",
+                    "ERROR: --style with edit expects a single base image "
+                    "(the preview or layer to extract from). "
+                    "Pass additional reference images via the style's image_refs instead.",
                     file=sys.stderr,
                 )
                 sys.exit(1)

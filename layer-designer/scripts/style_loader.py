@@ -148,6 +148,10 @@ def validate(style: dict[str, Any], style_dir: str | Path) -> list[str]:
     name = style.get("name")
     if name is not None and not isinstance(name, str):
         errors.append("name must be a string")
+    elif isinstance(name, str) and name.strip() and style_dir.name != name.strip():
+        errors.append(
+            f"name '{name}' does not match folder name '{style_dir.name}'"
+        )
 
     image_refs = style.get("image_refs")
     if image_refs is not None:
@@ -444,14 +448,16 @@ def build_prompt(
         else:
             if len(refs) > IMAGE_HARD_CAP:
                 refs = refs[:IMAGE_HARD_CAP]
-        for i, ref in enumerate(refs, start=start_idx):
+        img_idx = start_idx
+        for ref in refs:
             abs_path = ref.get("abs_path")
             if abs_path is None:
                 continue
             tag = _primary_tag(ref) or None
             role = ref.get("role") or ""
-            headers.append(_format_image_header(i, tag, role))
+            headers.append(_format_image_header(img_idx, tag, role))
             image_paths.append(Path(abs_path))
+            img_idx += 1
 
     else:
         # layer / variant: base image goes first.
@@ -476,14 +482,16 @@ def build_prompt(
         remaining = IMAGE_HARD_CAP - 1
         if len(refs) > remaining:
             refs = refs[:remaining]
-        for offset, ref in enumerate(refs, start=2):
+        img_idx = 2
+        for ref in refs:
             abs_path = ref.get("abs_path")
             if abs_path is None:
                 continue
             tag = _primary_tag(ref) or None
             role = ref.get("role") or ""
-            headers.append(_format_image_header(offset, tag, role))
+            headers.append(_format_image_header(img_idx, tag, role))
             image_paths.append(Path(abs_path))
+            img_idx += 1
 
     # --- instruction block (phase-specific) ---------------------------
     instruction = _build_instruction(phase, control_type, headers, base_path)
@@ -500,7 +508,9 @@ def build_prompt(
         sections.append(instruction)
     if rules_text:
         if rule_kinds:
-            kinds_label = " / ".join(rule_kinds)
+            rules = style.get("rules") or {}
+            active_kinds = [k for k in rule_kinds if k in rules]
+            kinds_label = " / ".join(active_kinds)
             sections.append(f"Design rules (filtered to {kinds_label}):\n{rules_text}")
         else:
             sections.append(f"Design rules:\n{rules_text}")

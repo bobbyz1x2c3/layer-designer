@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.0",
+  "name": "fantasy-gacha-dark",
+  "description": "日系二次元幻想手游暗色UI，适用于编队、背包、商店、设置等界面",
+  "derived_from": "output/NTE-test/01-requirements/previews/preview_v2_001_20260428.png",
+  "image_refs": [
+    {
+      "path": "spec.png",
+      "role": "UI design specification reference sheet",
+      "use_for": [
+        "*"
+      ]
+    }
+  ],
+  "palette": {
+    "role": {
+      "primary": "#C8D4E0",
+      "surface": "#1A1A2E",
+      "background": "#0D0D1A",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#A0A8B8",
+      "border": "#3A3A50"
+    },
+    "semantic": {
+      "info": "#5B8DEF",
+      "success": "#50C878",
+      "warning": "#F5A623",
+      "danger": "#FF4D4F"
+    }
+  },
+  "typography": {
+    "font_family": "sans-serif",
+    "font_size_base": 14
+  },
+  "spacing": {
+    "base": 8,
+    "scale": [
+      4,
+      8,
+      12,
+      16,
+      24,
+      32,
+      48,
+      64
+    ]
+  },
+  "shape": {
+    "button_radius": 12,
+    "corner_radius_md": 8,
+    "border_width": 1
+  },
+  "elevation": {
+    "preset": "soft",
+    "shadow_md": "0 4px 12px rgba(0,0,0,0.25)"
+  },
+  "motif": {
+    "tags": [
+      "fantasy",
+      "gacha",
+      "dark-theme",
+      "anime",
+      "mobile-game"
+    ]
+  },
+  "rules": {
+    "interaction": [
+      "Hover state brightens background by 10% and adds subtle glow ring",
+      "Active/pressed state darkens background by 15% and compresses shadow",
+      "Disabled state uses 40% opacity and desaturates color",
+      "Selected state shows a soft outer glow matching primary tint"
+    ],
+    "layout": [
+      "All elements align to 8px grid",
+      "Touch targets minimum 44x44px",
+      "Safe area padding 16px on mobile",
+      "Content cards use 16px internal padding"
+    ],
+    "typography": [
+      "Chinese labels use medium weight, white or near-white color",
+      "Section titles use larger size (>=18px) with slight letter spacing",
+      "Numeric stats (ATK, HP, etc.) use monospaced-style alignment"
+    ],
+    "visual": [
+      "Character avatars sit on subtle glowing platform/halo",
+      "Navigation icons are circular with soft inner shadow",
+      "Action buttons use rounded rectangle with 1px subtle border",
+      "Background maintains atmospheric depth with faint vignette"
+    ]
+  },
+  "style_anchor_override": null
+}

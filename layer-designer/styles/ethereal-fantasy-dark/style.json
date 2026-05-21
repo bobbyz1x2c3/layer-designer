@@ -1,0 +1,96 @@
+{
+  "schema_version": "1.0",
+  "name": "ethereal-fantasy-dark",
+  "description": "暗黑奇幻二次元手游主界面UI，深紫黑底+青蓝荧光点缀+古典衬线标题，氛围空灵神秘",
+  "image_refs": [
+    {
+      "path": "spec.png",
+      "role": "UI design specification reference sheet",
+      "use_for": [
+        "*"
+      ]
+    }
+  ],
+  "palette": {
+    "role": {
+      "primary": "#6FE3F0",
+      "surface": "#1B1C2E",
+      "background": "#0A0B14",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#A8B0C0",
+      "border": "#3A3D4E"
+    },
+    "semantic": {
+      "info": "#6FE3F0",
+      "accent": "#B89BD4",
+      "warning": "#F5C26B",
+      "success": "#7DD3A8"
+    }
+  },
+  "typography": {
+    "font_family": "Cinzel, serif",
+    "font_size_base": 14
+  },
+  "spacing": {
+    "base": 8,
+    "scale": [
+      4,
+      8,
+      12,
+      16,
+      24,
+      32,
+      48,
+      64
+    ]
+  },
+  "shape": {
+    "button_radius": 4,
+    "corner_radius_md": 6,
+    "border_width": 1
+  },
+  "elevation": {
+    "preset": "soft",
+    "shadow_md": "0 4px 16px rgba(0,0,0,0.45)"
+  },
+  "motif": {
+    "tags": [
+      "dark-fantasy",
+      "ethereal-anime",
+      "gothic-mystic",
+      "rpg-gacha",
+      "mobile-game"
+    ]
+  },
+  "rules": {
+    "interaction": [
+      "Hover: 面板边框亮度+20%, 青蓝荧光点 (primary) 强度增强",
+      "Active/pressed: 面板内填充加深15%, 阴影压缩至 0 1px 4px",
+      "Disabled: 整体透明度40%, 去饱和至30%, 荧光消失",
+      "Selected: 外圈出现细青蓝描边 (1px primary) + 外发光"
+    ],
+    "layout": [
+      "所有元素对齐8px网格",
+      "面板内边距16px, 卡片之间间距24px",
+      "顶部状态栏使用胶囊形容器排列货币",
+      "底部导航五等分横向排列, 图标+文字垂直堆叠",
+      "面板背景使用半透明深色 (~80% opacity) 叠加在主背景图之上"
+    ],
+    "typography": [
+      "标题使用古典衬线字体 (Cinzel/Cormorant), 大写, 字间距+5%",
+      "副标题使用小号衬线斜体, 颜色 text_secondary",
+      "数字货币使用清晰无衬线, 加粗",
+      "底部导航文字使用小号无衬线全大写, 字间距+10%",
+      "强调标签 (RANK IV, CHAPTER 08) 使用极小号灰色全大写"
+    ],
+    "visual": [
+      "面板四角带细线装饰括号 (ornamental corner brackets)",
+      "关键位置点缀小青蓝荧光圆点 (3-4px) 作为科技感装饰",
+      "头像/图标使用六边形或菱形框边裁剪",
+      "进度条使用细线 (2px) 加端点荧光",
+      "整体背景保持氛围感, 加柔和暗角 (vignette)",
+      "按钮CTA使用 '→ TEXT' 箭头前缀, 无背景填充, 仅悬浮态显示底色"
+    ]
+  },
+  "style_anchor_override": null
+}

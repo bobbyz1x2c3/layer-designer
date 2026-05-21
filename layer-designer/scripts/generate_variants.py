@@ -192,6 +192,28 @@ def main():
             print(f"ERROR generating {state}: {e}", file=sys.stderr)
             results[state] = f"ERROR: {e}"
 
+    # Resolve style metadata for manifest (consistent with style-library.md spec)
+    style_info: dict | None = None
+    if args.style or args.style_from:
+        try:
+            import style_loader
+            style_dir = style_loader.resolve(args.style or args.style_from)
+            style = style_loader.load_style(style_dir)
+            style_info = {
+                "name": style.get("name"),
+                "schema_version": style.get("schema_version", "1.0"),
+            }
+            try:
+                style_info["dir"] = str(style_dir.relative_to(Path.cwd()))
+            except ValueError:
+                style_info["dir"] = str(style_dir)
+        except Exception:
+            # Fallback: record what the CLI provided
+            style_info = {
+                "name": args.style,
+                "dir": args.style_from,
+            }
+
     # Write manifest
     manifest_path = output_dir / f"{base_name}_variants_manifest.json"
     manifest: dict = {
@@ -200,11 +222,8 @@ def main():
         "states": args.states,
         "results": results,
     }
-    if args.style or args.style_from:
-        manifest["style_ref"] = {
-            "name": args.style,
-            "dir": args.style_from,
-        }
+    if style_info:
+        manifest["style_ref"] = style_info
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
     print(f"MANIFEST: {manifest_path}")
